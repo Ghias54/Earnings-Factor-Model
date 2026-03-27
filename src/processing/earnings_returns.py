@@ -9,8 +9,8 @@ PRICES_FILE = RAW_DATA_DIR / "daily_prices_from_clean_universe.csv"
 TAKEN_OUTPUT_FILE = PROCESSED_DATA_DIR / "earnings_returns.csv"
 SKIPPED_OUTPUT_FILE = PROCESSED_DATA_DIR / "earnings_returns_skipped.csv"
 
-BUY_DAYS_BEFORE = 5
-SELL_DAYS_AFTER = 10
+BUY_DAYS_BEFORE = 1
+SELL_DAYS_AFTER = 1
 
 
 def load_earnings() -> pd.DataFrame:
