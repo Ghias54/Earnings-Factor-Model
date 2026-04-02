@@ -10,12 +10,12 @@ returns_df = pd.read_csv(RETURNS_FILE)
 momentum_df = pd.read_csv(MOMENTUM_FILE)
 events_df = pd.read_csv(EVENTS_FILE)
 
-# Clean keys
+# Clean merge keys
 for df in [returns_df, momentum_df, events_df]:
     df["ticker"] = df["ticker"].astype(str).str.strip()
     df["earningsAnnouncementDate"] = pd.to_datetime(df["earningsAnnouncementDate"])
 
-# Merge ALL (still in memory only)
+# Merge in memory only
 df = returns_df.merge(
     momentum_df,
     on=["ticker", "earningsAnnouncementDate"],
@@ -28,68 +28,124 @@ df = df.merge(
     how="left"
 )
 
-print(f"Merged rows: {len(df)}\n")
+# Clean numeric columns
+df["returnDecimal"] = pd.to_numeric(df["returnDecimal"], errors="coerce")
+df["buyPrice"] = pd.to_numeric(df["buyPrice"], errors="coerce")
+df["epsSurprise"] = pd.to_numeric(df["epsSurprise"], errors="coerce")
+df["mom63"] = pd.to_numeric(df["mom63"], errors="coerce")
 
-# -------------------------
-# 🔹 BASELINE
-# -------------------------
-print("=== BASELINE ===")
-print(f"Avg return: {df['returnDecimal'].mean():.4f}")
-print(f"Win rate: {(df['returnDecimal'] > 0).mean():.4f}\n")
+# Drop rows missing core fields for testing
+df = df.dropna(subset=["returnDecimal", "buyPrice", "epsSurprise"]).copy()
 
-# -------------------------
-# 🔹 SURPRISE ONLY
-# -------------------------
-pos_surprise = df[df["epsSurprise"] > 0]
-neg_surprise = df[df["epsSurprise"] <= 0]
+# Create clipped return version
+df["clipped_return"] = df["returnDecimal"].clip(-0.20, 0.20)
 
-print("=== EPS SURPRISE TEST ===")
-print(f"Positive surprise avg return: {pos_surprise['returnDecimal'].mean():.4f}")
-print(f"Positive surprise win rate: {(pos_surprise['returnDecimal'] > 0).mean():.4f}")
-print()
-print(f"Negative surprise avg return: {neg_surprise['returnDecimal'].mean():.4f}")
-print(f"Negative surprise win rate: {(neg_surprise['returnDecimal'] > 0).mean():.4f}")
+print(f"Merged rows: {len(df):,}")
 print()
 
-# -------------------------
-# 🔹 MOMENTUM + SURPRISE
-# -------------------------
-combo = df[
+def print_stats(name, test_df, return_col):
+    test_df = test_df.dropna(subset=[return_col]).copy()
+
+    count = len(test_df)
+    if count == 0:
+        print(f"=== {name} ===")
+        print("Count: 0")
+        print()
+        return
+
+    avg_return = test_df[return_col].mean()
+    median_return = test_df[return_col].median()
+    win_rate = (test_df[return_col] > 0).mean()
+
+    print(f"=== {name} ===")
+    print(f"Count: {count:,}")
+    print(f"Avg return: {avg_return:.4f}")
+    print(f"Median return: {median_return:.4f}")
+    print(f"Win rate: {win_rate:.4f}")
+    print()
+
+# Thresholds from full cleaned dataset
+top_20_threshold = df["epsSurprise"].quantile(0.80)
+top_10_threshold = df["epsSurprise"].quantile(0.90)
+top_5_threshold = df["epsSurprise"].quantile(0.95)
+
+# Build test groups
+positive_surprise = df[df["epsSurprise"] > 0]
+top_20 = df[df["epsSurprise"] >= top_20_threshold]
+top_10 = df[df["epsSurprise"] >= top_10_threshold]
+top_5 = df[df["epsSurprise"] >= top_5_threshold]
+
+positive_surprise_price = df[
+    (df["epsSurprise"] > 0) &
+    (df["buyPrice"] > 5)
+]
+
+top_10_price = df[
+    (df["epsSurprise"] >= top_10_threshold) &
+    (df["buyPrice"] > 5)
+]
+
+top_5_price = df[
+    (df["epsSurprise"] >= top_5_threshold) &
+    (df["buyPrice"] > 5)
+]
+
+low_mom_positive_surprise = df[
     (df["epsSurprise"] > 0) &
     (df["mom63"] < 0)
 ]
 
-print("=== LOW MOMENTUM + POSITIVE SURPRISE ===")
-print(f"Count: {len(combo)}")
-print(f"Avg return: {combo['returnDecimal'].mean():.4f}")
-print(f"Win rate: {(combo['returnDecimal'] > 0).mean():.4f}")
-print()
-
-# -------------------------
-# 🔹 HIGH MOM + POSITIVE SURPRISE (compare)
-# -------------------------
-combo_high = df[
-    (df["epsSurprise"] > 0) &
-    (df["mom63"] > 0)
+low_mom_top_10_price = df[
+    (df["epsSurprise"] >= top_10_threshold) &
+    (df["buyPrice"] > 5) &
+    (df["mom63"] < 0)
 ]
 
-print("=== HIGH MOMENTUM + POSITIVE SURPRISE ===")
-print(f"Count: {len(combo_high)}")
-print(f"Avg return: {combo_high['returnDecimal'].mean():.4f}")
-print(f"Win rate: {(combo_high['returnDecimal'] > 0).mean():.4f}")
+# -------------------------
+# ORIGINAL RETURNS
+# -------------------------
+print("#############################")
+print("### ORIGINAL RETURN TESTS ###")
+print("#############################")
 print()
 
+print_stats("BASELINE", df, "returnDecimal")
+print_stats("POSITIVE EPS SURPRISE", positive_surprise, "returnDecimal")
+print_stats("TOP 20% EPS SURPRISE", top_20, "returnDecimal")
+print_stats("TOP 10% EPS SURPRISE", top_10, "returnDecimal")
+print_stats("TOP 5% EPS SURPRISE", top_5, "returnDecimal")
+print_stats("POSITIVE EPS SURPRISE + BUY PRICE > 5", positive_surprise_price, "returnDecimal")
+print_stats("TOP 10% EPS SURPRISE + BUY PRICE > 5", top_10_price, "returnDecimal")
+print_stats("TOP 5% EPS SURPRISE + BUY PRICE > 5", top_5_price, "returnDecimal")
+print_stats("POSITIVE EPS SURPRISE + LOW MOM63", low_mom_positive_surprise, "returnDecimal")
+print_stats("TOP 10% EPS SURPRISE + BUY PRICE > 5 + LOW MOM63", low_mom_top_10_price, "returnDecimal")
+
 # -------------------------
-# 🔹 EXTREME SURPRISE (top 20%)
+# CLIPPED RETURNS
 # -------------------------
-df = df.dropna(subset=["epsSurprise"])
+print("############################")
+print("### CLIPPED RETURN TESTS ###")
+print("############################")
+print()
 
-threshold = df["epsSurprise"].quantile(0.8)
+print_stats("BASELINE", df, "clipped_return")
+print_stats("POSITIVE EPS SURPRISE", positive_surprise, "clipped_return")
+print_stats("TOP 20% EPS SURPRISE", top_20, "clipped_return")
+print_stats("TOP 10% EPS SURPRISE", top_10, "clipped_return")
+print_stats("TOP 5% EPS SURPRISE", top_5, "clipped_return")
+print_stats("POSITIVE EPS SURPRISE + BUY PRICE > 5", positive_surprise_price, "clipped_return")
+print_stats("TOP 10% EPS SURPRISE + BUY PRICE > 5", top_10_price, "clipped_return")
+print_stats("TOP 5% EPS SURPRISE + BUY PRICE > 5", top_5_price, "clipped_return")
+print_stats("POSITIVE EPS SURPRISE + LOW MOM63", low_mom_positive_surprise, "clipped_return")
+print_stats("TOP 10% EPS SURPRISE + BUY PRICE > 5 + LOW MOM63", low_mom_top_10_price, "clipped_return")
 
-extreme = df[df["epsSurprise"] >= threshold]
+print("=== THRESHOLDS USED ===")
+print(f"Top 20% epsSurprise threshold: {top_20_threshold:.4f}")
+print(f"Top 10% epsSurprise threshold: {top_10_threshold:.4f}")
+print(f"Top 5% epsSurprise threshold: {top_5_threshold:.4f}")
+print()
 
-print("=== TOP 20% EPS SURPRISE ===")
-print(f"Count: {len(extreme)}")
-print(f"Avg return: {extreme['returnDecimal'].mean():.4f}")
-print(f"Win rate: {(extreme['returnDecimal'] > 0).mean():.4f}")
+print("=== CLIPPED RETURN RULE ===")
+print("Returns were clipped to the range [-0.20, 0.20].")
+print("That means anything below -20% becomes -20%, and anything above +20% becomes +20%.")
 print()
