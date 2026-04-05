@@ -1,12 +1,14 @@
 import pandas as pd
 from config import RAW_DATA_DIR, PROCESSED_DATA_DIR
 
-EVENTS_FILE = PROCESSED_DATA_DIR / "earnings_events.csv"
+# Use valuation_features as the canonical event universe (same as profitability / revisions)
+# so momentum coverage matches the other factors (47k+ events / 3k+ tickers).
+EVENTS_FILE = PROCESSED_DATA_DIR / "valuation_features.csv"
 PRICES_FILE = RAW_DATA_DIR / "daily_prices_from_clean_universe.csv"
 OUTPUT_FILE = PROCESSED_DATA_DIR / "momentum_features.csv"
 
-# Load files
-events = pd.read_csv(EVENTS_FILE)
+# Load files – valuation_features has ticker / earningsAnnouncementDate / anchorDate
+events = pd.read_csv(EVENTS_FILE, usecols=["ticker", "earningsAnnouncementDate", "anchorDate"])
 prices = pd.read_csv(PRICES_FILE, usecols=["ticker", "date", "close"])
 
 # Clean dates
@@ -55,17 +57,19 @@ for i, event in enumerate(events.itertuples(index=False), start=1):
     if stock_prices is None or stock_prices.empty:
         continue
 
-    mom21 = calc_momentum_from_group(stock_prices, anchor_date, 21)
-    mom63 = calc_momentum_from_group(stock_prices, anchor_date, 63)
+    mom21  = calc_momentum_from_group(stock_prices, anchor_date, 21)
+    mom63  = calc_momentum_from_group(stock_prices, anchor_date, 63)
     mom126 = calc_momentum_from_group(stock_prices, anchor_date, 126)
+    mom252 = calc_momentum_from_group(stock_prices, anchor_date, 252)
 
     rows.append({
         "ticker": ticker,
         "earningsAnnouncementDate": earnings_date.strftime("%Y-%m-%d"),
         "anchorDate": anchor_date.strftime("%Y-%m-%d"),
-        "mom21": mom21,
-        "mom63": mom63,
+        "mom21":  mom21,
+        "mom63":  mom63,
         "mom126": mom126,
+        "mom252": mom252,
     })
 
     if i % 1000 == 0:

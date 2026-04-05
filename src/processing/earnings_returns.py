@@ -1,6 +1,20 @@
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
 import pandas as pd
 
-from config import RAW_DATA_DIR, PROCESSED_DATA_DIR
+# Project root (so `python src/processing/earnings_returns.py` finds config)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from config import (
+    EARNINGS_BUY_DAYS_BEFORE_ANCHOR,
+    EARNINGS_SELL_DAYS_AFTER_ANCHOR,
+    MIN_BUY_PRICE_FOR_TRADE,
+    RAW_DATA_DIR,
+    PROCESSED_DATA_DIR,
+)
 
 
 EARNINGS_FILE = PROCESSED_DATA_DIR / "earnings_from_price_start.csv"
@@ -8,9 +22,6 @@ PRICES_FILE = RAW_DATA_DIR / "daily_prices_from_clean_universe.csv"
 
 TAKEN_OUTPUT_FILE = PROCESSED_DATA_DIR / "earnings_returns.csv"
 SKIPPED_OUTPUT_FILE = PROCESSED_DATA_DIR / "earnings_returns_skipped.csv"
-
-BUY_DAYS_BEFORE = -1
-SELL_DAYS_AFTER = 3
 
 
 def load_earnings() -> pd.DataFrame:
@@ -58,15 +69,22 @@ def prepare_price_lookup(prices_df: pd.DataFrame) -> dict:
     return price_lookup
 
 
-def process_earnings_event(event_row, price_lookup: dict):
+def process_earnings_event(
+    event_row,
+    price_lookup: dict,
+    *,
+    buy_days_before_anchor: int,
+    sell_days_after_anchor: int,
+    min_buy_price: float,
+):
     ticker = event_row["ticker"]
     earnings_date = event_row["earningsAnnouncementDate"]
 
     base_taken = {
         "ticker": ticker,
         "earningsAnnouncementDate": earnings_date,
-        "buyDaysBefore": BUY_DAYS_BEFORE,
-        "sellDaysAfter": SELL_DAYS_AFTER,
+        "buyDaysBefore": buy_days_before_anchor,
+        "sellDaysAfter": sell_days_after_anchor,
         "actualEps": event_row.get("actualEps"),
         "estimatedEps": event_row.get("estimatedEps"),
         "actualRevenue": event_row.get("actualRevenue"),
@@ -93,8 +111,8 @@ def process_earnings_event(event_row, price_lookup: dict):
 
     anchor_index = event_pos - 1
 
-    buy_index = anchor_index - BUY_DAYS_BEFORE
-    sell_index = anchor_index + SELL_DAYS_AFTER
+    buy_index = anchor_index - buy_days_before_anchor
+    sell_index = anchor_index + sell_days_after_anchor
 
     if buy_index < 0:
         base_skipped["skipReason"] = "Not enough days before earnings"
@@ -110,8 +128,8 @@ def process_earnings_event(event_row, price_lookup: dict):
     buy_price = buy_row["close"]
     sell_price = sell_row["close"]
 
-    if buy_price < 1:
-        base_skipped["skipReason"] = "Buy price under $1"
+    if buy_price <= min_buy_price:
+        base_skipped["skipReason"] = f"Buy price at or below ${min_buy_price:g}"
         return None, base_skipped
 
     if buy_row["volume"] < 100000:
@@ -144,7 +162,28 @@ def process_earnings_event(event_row, price_lookup: dict):
     return trade, None
 
 
-def build_earnings_returns(earnings_df: pd.DataFrame, prices_df: pd.DataFrame):
+def build_earnings_returns(
+    earnings_df: pd.DataFrame,
+    prices_df: pd.DataFrame,
+    *,
+    buy_days_before_anchor: int | None = None,
+    sell_days_after_anchor: int | None = None,
+    min_buy_price: float | None = None,
+):
+    buy_days_before_anchor = (
+        buy_days_before_anchor
+        if buy_days_before_anchor is not None
+        else EARNINGS_BUY_DAYS_BEFORE_ANCHOR
+    )
+    sell_days_after_anchor = (
+        sell_days_after_anchor
+        if sell_days_after_anchor is not None
+        else EARNINGS_SELL_DAYS_AFTER_ANCHOR
+    )
+    min_buy_price = (
+        min_buy_price if min_buy_price is not None else MIN_BUY_PRICE_FOR_TRADE
+    )
+
     price_lookup = prepare_price_lookup(prices_df)
 
     taken_rows = []
@@ -156,7 +195,13 @@ def build_earnings_returns(earnings_df: pd.DataFrame, prices_df: pd.DataFrame):
         if i % 5000 == 0:
             print(f"Processed {i}/{total} earnings events...")
 
-        trade_row, skipped_row = process_earnings_event(event_row, price_lookup)
+        trade_row, skipped_row = process_earnings_event(
+            event_row,
+            price_lookup,
+            buy_days_before_anchor=buy_days_before_anchor,
+            sell_days_after_anchor=sell_days_after_anchor,
+            min_buy_price=min_buy_price,
+        )
 
         if trade_row is not None:
             taken_rows.append(trade_row)
@@ -166,8 +211,27 @@ def build_earnings_returns(earnings_df: pd.DataFrame, prices_df: pd.DataFrame):
     return pd.DataFrame(taken_rows), pd.DataFrame(skipped_rows)
 
 
-def run() -> None:
+def run(
+    *,
+    buy_days_before_anchor: int | None = None,
+    sell_days_after_anchor: int | None = None,
+    min_buy_price: float | None = None,
+) -> None:
     PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    buy_days_before_anchor = (
+        buy_days_before_anchor
+        if buy_days_before_anchor is not None
+        else EARNINGS_BUY_DAYS_BEFORE_ANCHOR
+    )
+    sell_days_after_anchor = (
+        sell_days_after_anchor
+        if sell_days_after_anchor is not None
+        else EARNINGS_SELL_DAYS_AFTER_ANCHOR
+    )
+    min_buy_price = (
+        min_buy_price if min_buy_price is not None else MIN_BUY_PRICE_FOR_TRADE
+    )
 
     print("Loading earnings...")
     earnings_df = load_earnings()
@@ -177,8 +241,19 @@ def run() -> None:
     prices_df = load_prices()
     print(f"Price rows loaded: {len(prices_df)}")
 
-    print("Building trade dataset...")
-    taken_df, skipped_df = build_earnings_returns(earnings_df, prices_df)
+    print(
+        "Building trade dataset "
+        f"(buy {buy_days_before_anchor} td before anchor, "
+        f"sell {sell_days_after_anchor} td after anchor, "
+        f"min buy price > ${min_buy_price:g})..."
+    )
+    taken_df, skipped_df = build_earnings_returns(
+        earnings_df,
+        prices_df,
+        buy_days_before_anchor=buy_days_before_anchor,
+        sell_days_after_anchor=sell_days_after_anchor,
+        min_buy_price=min_buy_price,
+    )
 
     taken_df.to_csv(TAKEN_OUTPUT_FILE, index=False)
     skipped_df.to_csv(SKIPPED_OUTPUT_FILE, index=False)
@@ -197,5 +272,41 @@ def run() -> None:
         print(skipped_df["skipReason"].value_counts().head(10))
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=(
+            "Build earnings_returns.csv: buy/sell windows are trading days "
+            "relative to the last bar before earningsAnnouncementDate (anchor)."
+        )
+    )
+    p.add_argument(
+        "--buy-before",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"Trading days before anchor to buy (default: {EARNINGS_BUY_DAYS_BEFORE_ANCHOR})",
+    )
+    p.add_argument(
+        "--sell-after",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"Trading days after anchor to sell (default: {EARNINGS_SELL_DAYS_AFTER_ANCHOR})",
+    )
+    p.add_argument(
+        "--min-buy-price",
+        type=float,
+        default=None,
+        metavar="P",
+        help=f"Skip if buy close <= this (default: {MIN_BUY_PRICE_FOR_TRADE})",
+    )
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    run()
+    args = _parse_args()
+    run(
+        buy_days_before_anchor=args.buy_before,
+        sell_days_after_anchor=args.sell_after,
+        min_buy_price=args.min_buy_price,
+    )

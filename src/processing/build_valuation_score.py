@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 # allow import from project root
-sys.path.append(str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config import PROCESSED_DATA_DIR
 
 print("Starting valuation score build...")
@@ -29,35 +29,47 @@ df["earningsAnnouncementDate"] = pd.to_datetime(
 # SCORE EACH EARNINGS DATE CROSS-SECTION
 # lower PE / PS = better
 # =========================
-df["pe_score"] = df.groupby("earningsAnnouncementDate")["pe"].rank(
-    pct=True,
-    ascending=False
-)
+# Rank within calendar quarter so the cross-section is ~2,000 stocks, not ~30.
+df["_quarter"] = df["earningsAnnouncementDate"].dt.to_period("Q")
 
-df["ps_score"] = df.groupby("earningsAnnouncementDate")["ps"].rank(
-    pct=True,
-    ascending=False
-)
+# Lower value = better for all valuation metrics → ascending=False
+# Weighted: EV/EBITDA=0.30, P/E=0.25, P/S=0.20, P/FCF=0.15, P/B=0.10
+METRICS = [
+    ("pe",       0.25, False),
+    ("ps",       0.20, False),
+    ("ev_ebitda",0.30, False),
+    ("p_fcf",    0.15, False),
+    ("p_b",      0.10, False),
+]
 
-# =========================
-# COMBINE LIKE SEEKING ALPHA STYLE
-# if both exist -> average both
-# if only one exists -> use the one that exists
-# if neither exists -> NaN
-# =========================
-df["valuation_component_count"] = df[["pe_score", "ps_score"]].notna().sum(axis=1)
+score_cols: list[str] = []
+weights:    list[float] = []
 
-df["valuation_score"] = np.where(
-    df["pe_score"].notna() & df["ps_score"].notna(),
-    (df["pe_score"] + df["ps_score"]) / 2,
-    np.where(
-        df["pe_score"].notna(),
-        df["pe_score"],
-        df["ps_score"]
-    )
-)
+for col, weight, ascending in METRICS:
+    if col not in df.columns:
+        continue
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+    rank_col = f"_{col}_rank"
+    df[rank_col] = df.groupby("_quarter")[col].rank(pct=True, ascending=ascending)
+    df.loc[df[col].isna(), rank_col] = np.nan
+    score_cols.append(rank_col)
+    weights.append(weight)
 
-# make sure rows with no components stay NaN
+# Keep legacy score columns for compatibility
+if "_pe_rank" in df.columns:
+    df["pe_score"] = df["_pe_rank"]
+if "_ps_rank" in df.columns:
+    df["ps_score"] = df["_ps_rank"]
+
+rank_df    = df[score_cols]
+weight_arr = np.array(weights)
+notna_mask = rank_df.notna()
+eff_weights = notna_mask.multiply(weight_arr)
+eff_total   = eff_weights.sum(axis=1)
+
+weighted_sum = (rank_df.fillna(0) * weight_arr).sum(axis=1)
+df["valuation_score"] = np.where(eff_total > 0, weighted_sum / eff_total, np.nan)
+df["valuation_component_count"] = notna_mask.sum(axis=1)
 df.loc[df["valuation_component_count"] == 0, "valuation_score"] = np.nan
 
 # =========================

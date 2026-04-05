@@ -1,176 +1,186 @@
-import time
-import requests
-import pandas as pd
+"""
+Fetch full daily OHLCV price history for every ticker in companies_cleaned.csv.
 
+Uses 32 parallel threads with a 740 req/min sliding-window rate limiter
+(safe under the 750/min FMP cap).  One API call per ticker.
+
+Resumable: tickers already present in the output file are skipped.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import requests
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config import FMP_API_KEY, FMP_BASE_URL, RAW_DATA_DIR, PROCESSED_DATA_DIR
 
-
 OUTPUT_FILE = RAW_DATA_DIR / "daily_prices_from_clean_universe.csv"
-ERROR_FILE = RAW_DATA_DIR / "daily_prices_from_clean_universe_errors.csv"
+ERROR_FILE  = RAW_DATA_DIR / "daily_prices_from_clean_universe_errors.csv"
 
-SLEEP_SECONDS = 0.05
-CHECKPOINT_EVERY = 100
+MAX_WORKERS = 32
+RATE_LIMIT_CALLS_PER_MINUTE = 740   # safe under 750/min FMP cap
+RATE_WINDOW_SECONDS = 60.0
+CHECKPOINT_EVERY = 500
+HEARTBEAT_EVERY  = 100
 
-
-def load_cleaned_companies() -> pd.DataFrame:
-    path = PROCESSED_DATA_DIR / "companies_cleaned.csv"
-    return pd.read_csv(path)
-
-
-def get_completed_tickers(output_file) -> set:
-    if not output_file.exists():
-        return set()
-
-    df = pd.read_csv(output_file, usecols=["ticker"], on_bad_lines="skip", low_memory=False)
-    df = df[df["ticker"] != "ticker"].copy()
-
-    return set(df["ticker"].dropna().astype(str).str.strip().unique())
+OUTPUT_COLUMNS = ["ticker", "date", "open", "high", "low", "close", "volume"]
 
 
-def fetch_prices_for_ticker(session: requests.Session, ticker: str):
-    url = f"{FMP_BASE_URL}/historical-price-eod/full"
-    params = {
-        "symbol": ticker,
-        "apikey": FMP_API_KEY,
-    }
+class SlidingWindowRateLimiter:
+    def __init__(self, max_calls: int, window_seconds: float) -> None:
+        self.max_calls = max_calls
+        self.window = window_seconds
+        self._lock = threading.Lock()
+        self._times: list[float] = []
+
+    def acquire(self) -> None:
+        while True:
+            wait = 0.0
+            with self._lock:
+                now = time.monotonic()
+                cutoff = now - self.window
+                self._times = [t for t in self._times if t > cutoff]
+                if len(self._times) < self.max_calls:
+                    self._times.append(now)
+                    return
+                wait = self.window - (now - self._times[0]) + 0.002
+            time.sleep(max(wait, 0.01))
+
+
+_limiter    = SlidingWindowRateLimiter(RATE_LIMIT_CALLS_PER_MINUTE, RATE_WINDOW_SECONDS)
+_write_lock = threading.Lock()
+
+
+def fetch_ticker(session: requests.Session, ticker: str) -> tuple[list[dict], str | None]:
+    url    = f"{FMP_BASE_URL}/historical-price-eod/full"
+    params = {"symbol": ticker, "apikey": FMP_API_KEY}
 
     for attempt in range(3):
+        _limiter.acquire()
         try:
-            response = session.get(url, params=params, timeout=30)
-
-            if response.status_code == 200:
-                return response.json(), None
-
-            if response.status_code in [429, 500, 502, 503]:
+            r = session.get(url, params=params, timeout=30)
+            if r.status_code == 200:
+                data = r.json()
+                if not isinstance(data, list) or not data:
+                    return [], "No price data returned"
+                rows = [
+                    {
+                        "ticker": ticker,
+                        "date":   row.get("date"),
+                        "open":   row.get("open"),
+                        "high":   row.get("high"),
+                        "low":    row.get("low"),
+                        "close":  row.get("close"),
+                        "volume": row.get("volume"),
+                    }
+                    for row in data
+                ]
+                return rows, None
+            if r.status_code in (429, 500, 502, 503):
                 time.sleep(2 * (attempt + 1))
                 continue
-
-            return None, f"HTTP {response.status_code}"
-
+            return [], f"HTTP {r.status_code}"
         except Exception as e:
             if attempt < 2:
                 time.sleep(2 * (attempt + 1))
             else:
-                return None, str(e)
+                return [], str(e)
 
-    return None, "Failed after retries"
-
-
-def standardize_price_rows(ticker: str, data):
-    rows = []
-
-    if not isinstance(data, list):
-        return rows
-
-    for row in data:
-        rows.append(
-            {
-                "ticker": ticker,
-                "date": row.get("date"),
-                "open": row.get("open"),
-                "high": row.get("high"),
-                "low": row.get("low"),
-                "close": row.get("close"),
-                "volume": row.get("volume"),
-            }
-        )
-
-    return rows
+    return [], "Failed after retries"
 
 
-def append_rows_to_csv(rows: list, output_file) -> None:
+def _append_csv(rows: list[dict], path: Path, columns: list[str]) -> None:
     if not rows:
         return
+    df = pd.DataFrame(rows, columns=columns)
+    with _write_lock:
+        df.to_csv(path, mode="a", header=not path.exists(), index=False)
 
-    df = pd.DataFrame(rows)
-    file_exists = output_file.exists()
-    df.to_csv(output_file, mode="a", header=not file_exists, index=False)
 
-
-def append_errors_to_csv(errors: list, error_file) -> None:
+def _append_errors(errors: list[dict], path: Path) -> None:
     if not errors:
         return
-
     df = pd.DataFrame(errors)
-    file_exists = error_file.exists()
-    df.to_csv(error_file, mode="a", header=not file_exists, index=False)
+    with _write_lock:
+        df.to_csv(path, mode="a", header=not path.exists(), index=False)
+
+
+def get_completed_tickers() -> set[str]:
+    """Return tickers already fetched OR confirmed to have no price data."""
+    done: set[str] = set()
+    if OUTPUT_FILE.exists():
+        df = pd.read_csv(OUTPUT_FILE, usecols=["ticker"], on_bad_lines="skip", low_memory=False)
+        df = df[df["ticker"] != "ticker"]
+        done.update(df["ticker"].dropna().astype(str).str.strip().unique())
+    if ERROR_FILE.exists():
+        ef = pd.read_csv(ERROR_FILE, on_bad_lines="skip", low_memory=False)
+        if "error" in ef.columns:
+            permanent = ef[ef["error"].str.contains("No price data|HTTP 4", na=False)]
+            done.update(permanent["ticker"].dropna().astype(str).str.strip().unique())
+    return done
 
 
 def run() -> None:
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    companies_df = load_cleaned_companies()
-    tickers = companies_df["ticker"].dropna().astype(str).str.strip().tolist()[:500]
+    companies = pd.read_csv(PROCESSED_DATA_DIR / "companies_cleaned.csv")
+    all_tickers = companies["ticker"].dropna().astype(str).str.strip().tolist()
 
-    completed_tickers = get_completed_tickers(OUTPUT_FILE)
-    original_total = len(tickers)
-    tickers = [ticker for ticker in tickers if ticker not in completed_tickers]
+    done    = get_completed_tickers()
+    tickers = [t for t in all_tickers if t not in done]
 
-    batch_prices = []
-    batch_errors = []
-    total_rows_written = 0
-    total_errors_written = 0
+    print(f"Universe:   {len(all_tickers):,} tickers")
+    print(f"Completed:  {len(done):,}")
+    print(f"Remaining:  {len(tickers):,}")
+    print(f"Workers:    {MAX_WORKERS}  |  Rate: {RATE_LIMIT_CALLS_PER_MINUTE}/min (~{len(tickers)/RATE_LIMIT_CALLS_PER_MINUTE:.0f} min)")
+    print(f"Output:     {OUTPUT_FILE}")
 
-    print(f"Total cleaned tickers: {original_total}")
-    print(f"Already completed tickers: {len(completed_tickers)}")
-    print(f"Remaining tickers to fetch: {len(tickers)}")
+    completed   = 0
+    batch_rows:   list[dict] = []
+    batch_errors: list[dict] = []
+    total_rows    = 0
 
-    with requests.Session() as session:
-        for i, ticker in enumerate(tickers, start=1):
-            print(f"[{i}/{len(tickers)}] Fetching prices for {ticker}")
+    with requests.Session() as session, ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {pool.submit(fetch_ticker, session, t): t for t in tickers}
 
-            data, error = fetch_prices_for_ticker(session, ticker)
-
-            if error is not None:
-                batch_errors.append(
-                    {
-                        "ticker": ticker,
-                        "error": error,
-                    }
-                )
-            else:
-                rows = standardize_price_rows(ticker, data)
-
-                if rows:
-                    batch_prices.extend(rows)
+        for future in as_completed(futures):
+            ticker = futures[future]
+            completed += 1
+            try:
+                rows, err = future.result()
+                if err:
+                    batch_errors.append({"ticker": ticker, "error": err})
+                elif rows:
+                    batch_rows.extend(rows)
                 else:
-                    batch_errors.append(
-                        {
-                            "ticker": ticker,
-                            "error": "No price data returned",
-                        }
-                    )
+                    batch_errors.append({"ticker": ticker, "error": "empty"})
+            except Exception as e:
+                batch_errors.append({"ticker": ticker, "error": str(e)})
 
-            if i % CHECKPOINT_EVERY == 0:
-                append_rows_to_csv(batch_prices, OUTPUT_FILE)
-                append_errors_to_csv(batch_errors, ERROR_FILE)
+            if completed % HEARTBEAT_EVERY == 0:
+                pct = 100 * completed / len(tickers)
+                print(f"  [{completed}/{len(tickers)}] {pct:.1f}%  rows_buf={len(batch_rows):,}  errors={len(batch_errors)}", flush=True)
 
-                total_rows_written += len(batch_prices)
-                total_errors_written += len(batch_errors)
+            if completed % CHECKPOINT_EVERY == 0:
+                _append_csv(batch_rows, OUTPUT_FILE, OUTPUT_COLUMNS)
+                _append_errors(batch_errors, ERROR_FILE)
+                total_rows += len(batch_rows)
+                print(f"  Checkpoint: {completed} tickers, {total_rows:,} total rows written")
+                batch_rows, batch_errors = [], []
 
-                print(
-                    f"Checkpoint at {i} tickers | "
-                    f"batch rows written: {len(batch_prices)} | "
-                    f"total rows written this run: {total_rows_written} | "
-                    f"errors written this run: {total_errors_written}"
-                )
-
-                batch_prices = []
-                batch_errors = []
-
-            time.sleep(SLEEP_SECONDS)
-
-    append_rows_to_csv(batch_prices, OUTPUT_FILE)
-    append_errors_to_csv(batch_errors, ERROR_FILE)
-
-    total_rows_written += len(batch_prices)
-    total_errors_written += len(batch_errors)
-
-    print("\nDone.")
-    print(f"Total price rows written this run: {total_rows_written}")
-    print(f"Total errors written this run: {total_errors_written}")
-    print(f"Prices file: {OUTPUT_FILE}")
-    print(f"Errors file: {ERROR_FILE}")
+    _append_csv(batch_rows, OUTPUT_FILE, OUTPUT_COLUMNS)
+    _append_errors(batch_errors, ERROR_FILE)
+    total_rows += len(batch_rows)
+    print(f"\nDone. {completed:,} tickers processed, {total_rows:,} price rows written.")
+    print(f"Output: {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":

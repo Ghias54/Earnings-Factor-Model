@@ -1,0 +1,63 @@
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[2]
+SRC = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(SRC))
+from config import PROCESSED_DATA_DIR
+from processing.scoring_utils import rating_to_grade, score_to_rating
+
+INPUT_FILE = PROCESSED_DATA_DIR / "momentum_features.csv"
+OUTPUT_FILE = PROCESSED_DATA_DIR / "momentum_scores.csv"
+
+
+def run() -> None:
+    df = pd.read_csv(INPUT_FILE, low_memory=False)
+    df["earningsAnnouncementDate"] = pd.to_datetime(
+        df["earningsAnnouncementDate"], errors="coerce"
+    )
+
+    df["mom63"]  = pd.to_numeric(df["mom63"],  errors="coerce")
+    df["mom126"] = pd.to_numeric(df["mom126"], errors="coerce")
+    df["mom252"] = pd.to_numeric(df["mom252"], errors="coerce") if "mom252" in df.columns else np.nan
+
+    # Rank within calendar quarter so the cross-section is ~2,000 stocks, not ~30.
+    df["_quarter"] = df["earningsAnnouncementDate"].dt.to_period("Q")
+
+    # SA-style momentum: 3M + 6M + 12M weighted average (12M primary).
+    df["mom63_score"]  = df.groupby("_quarter")["mom63"].rank(pct=True, ascending=True)
+    df["mom126_score"] = df.groupby("_quarter")["mom126"].rank(pct=True, ascending=True)
+    df["mom252_score"] = df.groupby("_quarter")["mom252"].rank(pct=True, ascending=True)
+
+    # Weighted: 12M=0.5, 6M=0.3, 3M=0.2 — match the typical Jegadeesh-Titman weighting
+    score_parts  = pd.DataFrame({
+        "s63":  df["mom63_score"]  * 0.20,
+        "s126": df["mom126_score"] * 0.30,
+        "s252": df["mom252_score"] * 0.50,
+    })
+    weight_parts = pd.DataFrame({
+        "w63":  df["mom63_score"].notna()  * 0.20,
+        "w126": df["mom126_score"].notna() * 0.30,
+        "w252": df["mom252_score"].notna() * 0.50,
+    })
+    total_weight = weight_parts.sum(axis=1)
+    total_score  = score_parts.fillna(0).sum(axis=1)
+    df["momentum_score"] = np.where(
+        total_weight > 0, total_score / total_weight, np.nan
+    )
+    df["momentum_score"] = pd.Series(df["momentum_score"].astype(float))
+    df.loc[total_weight == 0, "momentum_score"] = np.nan
+
+    df["momentum_rating"] = score_to_rating(df["momentum_score"])
+    df["momentum_grade"] = df["momentum_rating"].apply(rating_to_grade)
+
+    df.to_csv(OUTPUT_FILE, index=False)
+    print(f"Saved {len(df)} rows to {OUTPUT_FILE}")
+
+
+if __name__ == "__main__":
+    run()

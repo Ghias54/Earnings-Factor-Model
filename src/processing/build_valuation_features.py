@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 # allow import from project root
-sys.path.append(str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from config import RAW_DATA_DIR, PROCESSED_DATA_DIR
 
@@ -253,8 +253,68 @@ valuation["ps_clipped"] = valuation["ps"].clip(lower=0, upper=MAX_PS)
 
 
 # =========================
+# ENRICH WITH EV/EBITDA, P/B, P/FCF FROM FINANCIAL STATEMENTS (if available)
+# =========================
+ENRICHED_FILE = PROCESSED_DATA_DIR / "ttm_financials_enriched.csv"
+if ENRICHED_FILE.exists():
+    print("\nMerging enriched TTM financials for EV/EBITDA, P/B, P/FCF...")
+    ttm_enr = pd.read_csv(ENRICHED_FILE, low_memory=False)
+    ttm_enr["earningsAnnouncementDate"] = pd.to_datetime(ttm_enr["earningsAnnouncementDate"], errors="coerce")
+    ttm_enr["ticker"] = ttm_enr["ticker"].astype(str).str.strip()
+    for c in ["ttm_ebitda","ttm_freeCashFlow","ttm_totalStockholdersEquity",
+              "ttm_totalDebt","ttm_cashAndShortTermInvestments"]:
+        if c in ttm_enr.columns:
+            ttm_enr[c] = pd.to_numeric(ttm_enr[c], errors="coerce")
+
+    valuation = valuation.merge(
+        ttm_enr[["ticker","earningsAnnouncementDate","ttm_ebitda","ttm_freeCashFlow",
+                 "ttm_totalStockholdersEquity","ttm_totalDebt","ttm_cashAndShortTermInvestments"]],
+        on=["ticker","earningsAnnouncementDate"], how="left"
+    )
+
+    # EV = market cap + total debt - cash
+    valuation["ev"] = (
+        valuation["marketCap"].fillna(0)
+        + valuation["ttm_totalDebt"].fillna(0)
+        - valuation["ttm_cashAndShortTermInvestments"].fillna(0)
+    )
+    valuation.loc[valuation["ev"] <= 0, "ev"] = np.nan
+
+    # EV/EBITDA — cap at 100
+    valuation["ev_ebitda"] = np.where(
+        valuation["ttm_ebitda"].fillna(0) > 1e6,
+        valuation["ev"] / valuation["ttm_ebitda"], np.nan
+    )
+    valuation.loc[valuation["ev_ebitda"] > 100, "ev_ebitda"] = np.nan
+    valuation.loc[valuation["ev_ebitda"] <= 0,  "ev_ebitda"] = np.nan
+
+    # P/FCF — only if FCF > 0 (negative FCF makes ratio meaningless)
+    valuation["p_fcf"] = np.where(
+        valuation["ttm_freeCashFlow"].fillna(0) > 1e6,
+        valuation["marketCap"] / valuation["ttm_freeCashFlow"], np.nan
+    )
+    valuation.loc[valuation["p_fcf"] > 200, "p_fcf"] = np.nan
+
+    # P/B = market cap / book value (equity).  Skip if equity ≤ 0 (common for airlines etc.)
+    valuation["p_b"] = np.where(
+        valuation["ttm_totalStockholdersEquity"].fillna(0) > 1e6,
+        valuation["marketCap"] / valuation["ttm_totalStockholdersEquity"], np.nan
+    )
+    valuation.loc[valuation["p_b"] > 100, "p_b"] = np.nan
+    valuation.loc[valuation["p_b"] <= 0,  "p_b"] = np.nan
+
+    print(f"  EV/EBITDA coverage: {valuation['ev_ebitda'].notna().sum():,}")
+    print(f"  P/FCF coverage:     {valuation['p_fcf'].notna().sum():,}")
+    print(f"  P/B coverage:       {valuation['p_b'].notna().sum():,}")
+else:
+    print("\nEnriched TTM file not found — skipping EV/EBITDA, P/B, P/FCF.")
+    for col in ["ev_ebitda","p_fcf","p_b","ev"]:
+        valuation[col] = np.nan
+
+# =========================
 # FINAL COLUMNS
 # =========================
+extra_cols = [c for c in ["ev_ebitda","p_fcf","p_b"] if c in valuation.columns]
 valuation = valuation[
     [
         "ticker",
@@ -274,7 +334,7 @@ valuation = valuation[
         "ps",
         "pe_clipped",
         "ps_clipped",
-    ]
+    ] + extra_cols
 ]
 
 

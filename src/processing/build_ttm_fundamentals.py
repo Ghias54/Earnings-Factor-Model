@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 # allow import from project root
-sys.path.append(str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from config import RAW_DATA_DIR, PROCESSED_DATA_DIR
 
