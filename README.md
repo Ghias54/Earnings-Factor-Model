@@ -70,3 +70,19 @@ The runner sets `PYTHONPATH` for child scripts so `config` imports resolve.
 | `data/processed/composite_quant_scores.csv` | Mean of available factor scores |
 
 `src/processing/simulate_portfolio.py` defaults to a **composite** filter (`FILTER_MODE = "composite"`). If `composite_quant_scores.csv` is missing, it falls back to the legacy EPS-surprise + negative-momentum rule. Revisions stay NaN until analyst estimates are ingested; the composite still averages the other factors.
+
+## Seeking Alpha alignment workflow
+
+Create a manual benchmark from SA snapshots:
+
+1. Copy `data/processed/sa_benchmark_template.csv` to `data/processed/sa_benchmark.csv`
+2. Add rows with:
+   - `ticker`, `date` (earnings date in your model output)
+   - SA values: quant score/rating and 5 factor grades
+3. Run:
+
+```bash
+PYTHONPATH=. python src/processing/evaluate_sa_alignment.py
+```
+
+This writes `data/processed/sa_alignment_report.csv` and prints score/rating/factor match metrics.

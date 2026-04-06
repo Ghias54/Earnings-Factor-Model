@@ -23,6 +23,17 @@ FACTORS = [
     ("momentum_scores.csv", "momentum_score"),
 ]
 
+# Composite blend weights (SA-like heuristic):
+# Keep a smaller valuation weight and emphasize quality/trend buckets.
+# Weights are renormalized across available factors row-by-row.
+WEIGHTS = {
+    "valuation_score": 0.15,
+    "growth_score": 0.20,
+    "profitability_score": 0.25,
+    "revisions_score": 0.20,
+    "momentum_score": 0.20,
+}
+
 
 def load_factor(path_name: str, score_col: str) -> pd.DataFrame:
     path = PROCESSED_DATA_DIR / path_name
@@ -57,10 +68,25 @@ def run() -> None:
     score_cols = [f[1] for f in FACTORS]
     present = merged[score_cols]
     merged["composite_component_count"] = present.notna().sum(axis=1)
-    merged["composite_score"] = present.mean(axis=1, skipna=True)
+
+    # Weighted blend on available factors.
+    w = np.array([WEIGHTS.get(c, 0.0) for c in score_cols], dtype=float)
+    w_df = present.notna().multiply(w, axis=1)
+    w_sum = w_df.sum(axis=1)
+    weighted_raw = (present.fillna(0.0) * w).sum(axis=1)
+    merged["composite_raw_blend"] = np.where(w_sum > 0, weighted_raw / w_sum, np.nan)
+    merged.loc[merged["composite_component_count"] == 0, "composite_raw_blend"] = np.nan
+
+    # SA-style comparability improvement:
+    # rank the blended composite cross-sectionally (by calendar quarter), then map to 0-5.
+    merged["_quarter"] = merged["earningsAnnouncementDate"].dt.to_period("Q")
+    merged["composite_score"] = merged.groupby("_quarter")["composite_raw_blend"].rank(
+        pct=True, ascending=True
+    )
     merged.loc[merged["composite_component_count"] == 0, "composite_score"] = np.nan
     merged["composite_rating"] = score_to_rating(merged["composite_score"])
     merged["composite_grade"] = merged["composite_rating"].apply(rating_to_grade)
+    merged = merged.drop(columns=["_quarter"])
 
     PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
     merged.to_csv(OUTPUT_FILE, index=False)
