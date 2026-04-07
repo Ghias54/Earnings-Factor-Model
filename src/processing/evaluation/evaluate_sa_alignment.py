@@ -20,11 +20,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import MASTER_DAILY_QUANT_PANEL_FILE, PROCESSED_DATA_DIR
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from config import (
+    COMPOSITE_SCORES_FILE,
+    GROWTH_SCORES_FILE,
+    MASTER_DAILY_QUANT_PANEL_FILE,
+    MOMENTUM_SCORES_FILE,
+    PROFITABILITY_SCORES_FILE,
+    REVISIONS_SCORES_FILE,
+    SA_ALIGNMENT_REPORT_FILE,
+    SA_BENCHMARK_FILE,
+    VALUATION_SCORES_FILE,
+)
 
-BENCHMARK_FILE = PROCESSED_DATA_DIR / "sa_benchmark.csv"
-OUTPUT_FILE = PROCESSED_DATA_DIR / "sa_alignment_report.csv"
+BENCHMARK_FILE = SA_BENCHMARK_FILE
+OUTPUT_FILE = SA_ALIGNMENT_REPORT_FILE
 
 
 def _norm_grade(v: object) -> object:
@@ -86,29 +96,29 @@ def _dedupe_event_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_our_scores() -> pd.DataFrame:
-    comp = pd.read_csv(PROCESSED_DATA_DIR / "composite_quant_scores.csv", low_memory=False)
+    comp = pd.read_csv(COMPOSITE_SCORES_FILE, low_memory=False)
     val = pd.read_csv(
-        PROCESSED_DATA_DIR / "valuation_scores.csv",
+        VALUATION_SCORES_FILE,
         usecols=["ticker", "earningsAnnouncementDate", "valuation_grade"],
         low_memory=False,
     )
     grw = pd.read_csv(
-        PROCESSED_DATA_DIR / "growth_scores.csv",
+        GROWTH_SCORES_FILE,
         usecols=["ticker", "earningsAnnouncementDate", "growth_grade"],
         low_memory=False,
     )
     prof = pd.read_csv(
-        PROCESSED_DATA_DIR / "profitability_scores.csv",
+        PROFITABILITY_SCORES_FILE,
         usecols=["ticker", "earningsAnnouncementDate", "profitability_grade"],
         low_memory=False,
     )
     mom = pd.read_csv(
-        PROCESSED_DATA_DIR / "momentum_scores.csv",
+        MOMENTUM_SCORES_FILE,
         usecols=["ticker", "earningsAnnouncementDate", "momentum_grade"],
         low_memory=False,
     )
     rev = pd.read_csv(
-        PROCESSED_DATA_DIR / "revisions_scores.csv",
+        REVISIONS_SCORES_FILE,
         usecols=["ticker", "earningsAnnouncementDate", "revisions_grade"],
         low_memory=False,
     )
@@ -155,8 +165,7 @@ def load_our_scores() -> pd.DataFrame:
 def _resolve_panel_path() -> Path:
     for p in (
         MASTER_DAILY_QUANT_PANEL_FILE,
-        PROCESSED_DATA_DIR / "master_daily_quant_panel.csv.gz",
-        PROCESSED_DATA_DIR / "master_daily_quant_panel.csv",
+        MASTER_DAILY_QUANT_PANEL_FILE.with_suffix(""),
     ):
         if p.is_file():
             return p
@@ -300,6 +309,7 @@ def run(*, join: str) -> None:
     merged["revisions_match"] = merged["our_revisions"] == merged["sa_revisions"]
     merged = merged.sort_values(["ticker", "date"]).reset_index(drop=True)
 
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(OUTPUT_FILE, index=False)
     print(f"Saved {OUTPUT_FILE} (join={join})")
     print_metrics(merged.dropna(subset=["our_quant_score", "sa_quant_score"]))

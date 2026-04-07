@@ -4,15 +4,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
+SRC = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC))
-from config import PROCESSED_DATA_DIR
-from processing.scoring_utils import combine_two_rank_scores, rating_to_grade, score_to_rating
+from config import GROWTH_FEATURES_FILE, GROWTH_SCORES_FILE
+from processing.scoring_utils import rating_to_grade, score_to_rating
 
-INPUT_FILE = PROCESSED_DATA_DIR / "growth_features.csv"
-OUTPUT_FILE = PROCESSED_DATA_DIR / "growth_scores.csv"
+INPUT_FILE = GROWTH_FEATURES_FILE
+OUTPUT_FILE = GROWTH_SCORES_FILE
 
 
 def run() -> None:

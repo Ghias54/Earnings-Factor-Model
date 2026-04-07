@@ -14,12 +14,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import PROCESSED_DATA_DIR
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from config import (
+    PROFITABILITY_FEATURES_FILE,
+    PROCESSED_FACTORS_DIR,
+    TTM_FINANCIALS_ENRICHED_FILE,
+    VALUATION_FEATURES_FILE,
+)
 
-VALUATION_FILE  = PROCESSED_DATA_DIR / "valuation_features.csv"
-ENRICHED_FILE   = PROCESSED_DATA_DIR / "ttm_financials_enriched.csv"
-OUTPUT_FILE     = PROCESSED_DATA_DIR / "profitability_features.csv"
+VALUATION_FILE = VALUATION_FEATURES_FILE
+ENRICHED_FILE = TTM_FINANCIALS_ENRICHED_FILE
+OUTPUT_FILE = PROFITABILITY_FEATURES_FILE
 
 MAX_MARGIN = 2.0   # clip margins beyond ±200%
 
@@ -109,7 +114,7 @@ def run() -> None:
             "fcf_margin","roa","roe"]
     out = df[[c for c in keep if c in df.columns]].copy()
 
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_FACTORS_DIR.mkdir(parents=True, exist_ok=True)
     out.to_csv(OUTPUT_FILE, index=False)
     print(f"Saved {len(out):,} rows to {OUTPUT_FILE}")
 

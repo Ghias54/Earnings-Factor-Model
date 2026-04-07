@@ -2,7 +2,7 @@ import time
 import requests
 import pandas as pd
 
-from config import FMP_API_KEY, FMP_BASE_URL, RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config import COMPANIES_CLEANED_FILE, FMP_API_KEY, FMP_BASE_URL, RAW_DATA_DIR
 
 
 OUTPUT_FILE = RAW_DATA_DIR / "earnings_from_clean_universe.csv"
@@ -13,8 +13,7 @@ CHECKPOINT_EVERY = 100
 
 
 def load_cleaned_companies() -> pd.DataFrame:
-    path = PROCESSED_DATA_DIR / "companies_cleaned.csv"
-    return pd.read_csv(path)
+    return pd.read_csv(COMPANIES_CLEANED_FILE)
 
 
 def fetch_earnings_for_ticker(ticker: str):

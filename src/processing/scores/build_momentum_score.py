@@ -4,15 +4,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
+SRC = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC))
-from config import PROCESSED_DATA_DIR
+from config import MOMENTUM_FEATURES_FILE, MOMENTUM_SCORES_FILE
 from processing.scoring_utils import rating_to_grade, score_to_rating
 
-INPUT_FILE = PROCESSED_DATA_DIR / "momentum_features.csv"
-OUTPUT_FILE = PROCESSED_DATA_DIR / "momentum_scores.csv"
+INPUT_FILE = MOMENTUM_FEATURES_FILE
+OUTPUT_FILE = MOMENTUM_SCORES_FILE
 
 
 def run() -> None:

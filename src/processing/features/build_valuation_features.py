@@ -5,9 +5,16 @@ import numpy as np
 import pandas as pd
 
 # allow import from project root
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from config import RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config import (
+    EARNINGS_FROM_PRICE_START_FILE,
+    PROCESSED_FACTORS_DIR,
+    RAW_DATA_DIR,
+    TTM_FINANCIALS_ENRICHED_FILE,
+    TTM_FUNDAMENTALS_FILE,
+    VALUATION_FEATURES_FILE,
+)
 
 
 print("Starting valuation feature build...")
@@ -30,10 +37,10 @@ MAX_PS = 50
 # =========================
 # LOAD DATA
 # =========================
-earnings = pd.read_csv(PROCESSED_DATA_DIR / "earnings_from_price_start.csv")
+earnings = pd.read_csv(EARNINGS_FROM_PRICE_START_FILE)
 prices = pd.read_csv(RAW_DATA_DIR / "daily_prices_from_clean_universe.csv", low_memory=False)
 shares = pd.read_csv(RAW_DATA_DIR / "shares_history.csv")
-ttm = pd.read_csv(PROCESSED_DATA_DIR / "ttm_fundamentals.csv")
+ttm = pd.read_csv(TTM_FUNDAMENTALS_FILE)
 
 print(f"Earnings rows loaded: {len(earnings)}")
 print(f"Price rows loaded: {len(prices)}")
@@ -255,7 +262,7 @@ valuation["ps_clipped"] = valuation["ps"].clip(lower=0, upper=MAX_PS)
 # =========================
 # ENRICH WITH EV/EBITDA, P/B, P/FCF FROM FINANCIAL STATEMENTS (if available)
 # =========================
-ENRICHED_FILE = PROCESSED_DATA_DIR / "ttm_financials_enriched.csv"
+ENRICHED_FILE = TTM_FINANCIALS_ENRICHED_FILE
 if ENRICHED_FILE.exists():
     print("\nMerging enriched TTM financials for EV/EBITDA, P/B, P/FCF...")
     ttm_enr = pd.read_csv(ENRICHED_FILE, low_memory=False)
@@ -341,7 +348,8 @@ valuation = valuation[
 # =========================
 # SAVE
 # =========================
-output_path = PROCESSED_DATA_DIR / "valuation_features.csv"
+PROCESSED_FACTORS_DIR.mkdir(parents=True, exist_ok=True)
+output_path = VALUATION_FEATURES_FILE
 valuation.to_csv(output_path, index=False)
 
 

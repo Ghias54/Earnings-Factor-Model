@@ -20,7 +20,7 @@ import requests
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import FMP_API_KEY, FMP_BASE_URL, RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config import COMPANIES_CLEANED_FILE, FMP_API_KEY, FMP_BASE_URL, RAW_DATA_DIR
 
 OUTPUT_FILE = RAW_DATA_DIR / "daily_prices_from_clean_universe.csv"
 ERROR_FILE  = RAW_DATA_DIR / "daily_prices_from_clean_universe_errors.csv"
@@ -131,7 +131,7 @@ def get_completed_tickers() -> set[str]:
 def run() -> None:
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    companies = pd.read_csv(PROCESSED_DATA_DIR / "companies_cleaned.csv")
+    companies = pd.read_csv(COMPANIES_CLEANED_FILE)
     all_tickers = companies["ticker"].dropna().astype(str).str.strip().tolist()
 
     done    = get_completed_tickers()

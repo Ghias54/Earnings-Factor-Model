@@ -1,11 +1,11 @@
 import pandas as pd
-from config import RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config import MOMENTUM_FEATURES_FILE, RAW_DATA_DIR, VALUATION_FEATURES_FILE
 
 # Use valuation_features as the canonical event universe (same as profitability / revisions)
 # so momentum coverage matches the other factors (47k+ events / 3k+ tickers).
-EVENTS_FILE = PROCESSED_DATA_DIR / "valuation_features.csv"
+EVENTS_FILE = VALUATION_FEATURES_FILE
 PRICES_FILE = RAW_DATA_DIR / "daily_prices_from_clean_universe.csv"
-OUTPUT_FILE = PROCESSED_DATA_DIR / "momentum_features.csv"
+OUTPUT_FILE = MOMENTUM_FEATURES_FILE
 
 # Load files – valuation_features has ticker / earningsAnnouncementDate / anchorDate
 events = pd.read_csv(EVENTS_FILE, usecols=["ticker", "earningsAnnouncementDate", "anchorDate"])

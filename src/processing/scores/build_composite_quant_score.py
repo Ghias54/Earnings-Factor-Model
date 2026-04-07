@@ -4,23 +4,30 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
+SRC = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC))
-from config import PROCESSED_DATA_DIR
+from config import (
+    COMPOSITE_SCORES_FILE,
+    GROWTH_SCORES_FILE,
+    MOMENTUM_SCORES_FILE,
+    PROFITABILITY_SCORES_FILE,
+    REVISIONS_SCORES_FILE,
+    VALUATION_SCORES_FILE,
+)
 from processing.scoring_utils import rating_to_grade, score_to_rating
 
-OUTPUT_FILE = PROCESSED_DATA_DIR / "composite_quant_scores.csv"
+OUTPUT_FILE = COMPOSITE_SCORES_FILE
 
 KEY = ["ticker", "earningsAnnouncementDate"]
 
 FACTORS = [
-    ("valuation_scores.csv", "valuation_score"),
-    ("growth_scores.csv", "growth_score"),
-    ("profitability_scores.csv", "profitability_score"),
-    ("revisions_scores.csv", "revisions_score"),
-    ("momentum_scores.csv", "momentum_score"),
+    (VALUATION_SCORES_FILE, "valuation_score"),
+    (GROWTH_SCORES_FILE, "growth_score"),
+    (PROFITABILITY_SCORES_FILE, "profitability_score"),
+    (REVISIONS_SCORES_FILE, "revisions_score"),
+    (MOMENTUM_SCORES_FILE, "momentum_score"),
 ]
 
 FACTOR_WEIGHTS = {
@@ -32,8 +39,7 @@ FACTOR_WEIGHTS = {
 }
 
 
-def load_factor(path_name: str, score_col: str) -> pd.DataFrame:
-    path = PROCESSED_DATA_DIR / path_name
+def load_factor(path: Path, score_col: str) -> pd.DataFrame:
     if not path.exists():
         print(f"Optional missing {path}; {score_col} will be NaN.")
         return pd.DataFrame(columns=KEY + [score_col])
@@ -50,13 +56,13 @@ def load_factor(path_name: str, score_col: str) -> pd.DataFrame:
 
 
 def run() -> None:
-    base = load_factor("valuation_scores.csv", "valuation_score")
+    base = load_factor(VALUATION_SCORES_FILE, "valuation_score")
     if base.empty:
-        raise SystemExit("valuation_scores.csv is required for composite.")
+        raise SystemExit(f"{VALUATION_SCORES_FILE.name} is required for composite.")
 
     merged = base.copy()
-    for fname, col in FACTORS[1:]:
-        part = load_factor(fname, col)
+    for fpath, col in FACTORS[1:]:
+        part = load_factor(fpath, col)
         if part.empty:
             merged[col] = np.nan
         else:
@@ -75,7 +81,7 @@ def run() -> None:
     merged["composite_rating"] = score_to_rating(merged["composite_score"])
     merged["composite_grade"] = merged["composite_rating"].apply(rating_to_grade)
 
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(OUTPUT_FILE, index=False)
     print(f"Saved {len(merged)} rows to {OUTPUT_FILE}")
 

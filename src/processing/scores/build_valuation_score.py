@@ -5,15 +5,15 @@ import numpy as np
 import pandas as pd
 
 # allow import from project root
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import PROCESSED_DATA_DIR
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from config import PROCESSED_FACTORS_DIR, VALUATION_FEATURES_FILE, VALUATION_SCORES_FILE
 
 print("Starting valuation score build...")
 
 # =========================
 # LOAD DATA
 # =========================
-df = pd.read_csv(PROCESSED_DATA_DIR / "valuation_features.csv", low_memory=False)
+df = pd.read_csv(VALUATION_FEATURES_FILE, low_memory=False)
 
 print("Shape:", df.shape)
 print("Columns:", df.columns.tolist())
@@ -149,7 +149,8 @@ print(
 # =========================
 # SAVE
 # =========================
-output_path = PROCESSED_DATA_DIR / "valuation_scores.csv"
+PROCESSED_FACTORS_DIR.mkdir(parents=True, exist_ok=True)
+output_path = VALUATION_SCORES_FILE
 df.to_csv(output_path, index=False)
 
 print("\nDONE")

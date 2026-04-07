@@ -3,18 +3,15 @@ Earnings-event portfolio backtest.
 
 Methodology (research / simplified execution model):
 - One candidate trade per (ticker, earningsAnnouncementDate) from earnings_returns.
-- Merge momentum + composite quant scores **as of each buy date** (backward ``merge_asof`` on the
-  last announced earnings snapshot on or before ``buyDate`` — avoids look-ahead vs merging on the
-  same row's ``earningsAnnouncementDate`` when buying before announcement).
-- **only enter** when quant is Buy or Strong Buy.
-- **Strong Buy** and **Buy** map to the existing 0–5 `composite_rating` and letter grades
-  produced by `build_composite_quant_score.py` (same scale as other factor scripts).
+- Merge momentum + composite quant scores as of each buy date (backward merge_asof on the
+  last announced earnings snapshot on or before buyDate; avoids look-ahead).
+- Only enter when quant is Buy or Strong Buy (composite_rating / composite_grade).
 - Each calendar day: close matured trades first, then open new trades up to max_positions.
-- New trades that day are the **highest** `composite_rating` first (no arbitrary CSV row order).
-- Equal-weight allocation of **available cash** across **available slots** for that day’s openings.
-- Round-trip transaction cost applied to each trade’s return.
+- New trades that day are the highest composite_rating first.
+- Equal-weight allocation of available cash across available slots for that day's openings.
+- Round-trip transaction cost applied to each trade's return.
 
-This is not live execution (no slippage, borrow, partial fills, or exchange hours).
+Not live execution (no slippage, borrow, partial fills, or exchange hours).
 """
 
 from __future__ import annotations
@@ -28,19 +25,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Project root (so `python src/processing/simulate_portfolio.py` finds config.py)
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import MIN_BUY_PRICE_FOR_TRADE, PROCESSED_DATA_DIR
+# Project root (this file lives under src/processing/backtest/)
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from config import (
+    COMPOSITE_SCORES_FILE,
+    DRAWDOWN_CURVE_PNG_FILE,
+    EARNINGS_EVENTS_FILE,
+    EARNINGS_RETURNS_FILE,
+    EQUITY_CURVE_FILE,
+    EQUITY_CURVE_PNG_FILE,
+    MIN_BUY_PRICE_FOR_TRADE,
+    MOMENTUM_FEATURES_FILE,
+    PORTFOLIO_TRADES_FILE,
+    PROCESSED_BACKTEST_DIR,
+    TRADE_HISTOGRAM_FILE,
+)
 
-RETURNS_FILE = PROCESSED_DATA_DIR / "earnings_returns.csv"
-MOMENTUM_FILE = PROCESSED_DATA_DIR / "momentum_features.csv"
-EVENTS_FILE = PROCESSED_DATA_DIR / "earnings_events.csv"
-COMPOSITE_FILE = PROCESSED_DATA_DIR / "composite_quant_scores.csv"
+RETURNS_FILE = EARNINGS_RETURNS_FILE
+MOMENTUM_FILE = MOMENTUM_FEATURES_FILE
+EVENTS_FILE = EARNINGS_EVENTS_FILE
+COMPOSITE_FILE = COMPOSITE_SCORES_FILE
 
-EQUITY_OUTPUT_FILE = PROCESSED_DATA_DIR / "equity_curve.csv"
-EQUITY_CHART_FILE = PROCESSED_DATA_DIR / "equity_curve.png"
-DRAWDOWN_CHART_FILE = PROCESSED_DATA_DIR / "drawdown_curve.png"
-RETURNS_HIST_FILE = PROCESSED_DATA_DIR / "trade_return_histogram.png"
+EQUITY_OUTPUT_FILE = EQUITY_CURVE_FILE
+EQUITY_CHART_FILE = EQUITY_CURVE_PNG_FILE
+DRAWDOWN_CHART_FILE = DRAWDOWN_CURVE_PNG_FILE
+RETURNS_HIST_FILE = TRADE_HISTOGRAM_FILE
 
 # --- Portfolio knobs ---
 STARTING_CAPITAL = 10_000.0
@@ -48,15 +57,11 @@ MAX_POSITIONS = 10
 TRANSACTION_COST_ROUND_TRIP = 0.002  # 0.20% round-trip per trade
 
 # --- Quant filter: only Buy / Strong Buy ---
-# Composite uses 0–5 `composite_rating` and letter grades (rating_to_grade scale).
-# Strong Buy: letter A+ or A, or numeric >= 4.0
-# Buy: letter A- or B+, or numeric in [3.33, 4.0)
-# No trade at B or below.
 STRONG_BUY_GRADES = frozenset({"A+", "A"})
 BUY_GRADES = frozenset({"A-", "B+"})
 STRONG_BUY_RATING_MIN = 4.0
-BUY_RATING_MIN = 3.33  # bottom of B+ on this scale
-DEFAULT_MIN_COMPOSITE_COMPONENTS = 3  # require enough factor coverage
+BUY_RATING_MIN = 3.33
+DEFAULT_MIN_COMPOSITE_COMPONENTS = 3
 
 
 @dataclass
@@ -110,7 +115,7 @@ def load_and_merge(min_components: int, min_buy_price: float) -> pd.DataFrame:
 
     if not COMPOSITE_FILE.exists():
         raise FileNotFoundError(
-            f"Missing {COMPOSITE_FILE}. Run: PYTHONPATH=. python build_quant_scores.py"
+            f"Missing {COMPOSITE_FILE}. Run build_composite_quant_score (via run_pipeline.py)."
         )
 
     comp_df = pd.read_csv(COMPOSITE_FILE, low_memory=False)
@@ -136,7 +141,6 @@ def load_and_merge(min_components: int, min_buy_price: float) -> pd.DataFrame:
     comp_for_asof = comp_df[["ticker", "composite_source_announcement_date"] + score_cols]
 
     df = df.sort_values(["ticker", "buyDate"])
-    # Per-ticker merge_asof: pandas can reject global `by=` when buyDate is not monotonic across tickers.
     merged_parts: list[pd.DataFrame] = []
     for t, dgrp in df.groupby("ticker", sort=False):
         dgrp = dgrp.sort_values("buyDate", kind="mergesort")
@@ -198,7 +202,6 @@ def load_and_merge(min_components: int, min_buy_price: float) -> pd.DataFrame:
 
     df["netReturn"] = (df["returnDecimal"] - TRANSACTION_COST_ROUND_TRIP).clip(lower=-1.0)
 
-    # Best signals first when multiple trades share a buy date
     df = df.sort_values(
         ["buyDate", "composite_rating", "ticker"],
         ascending=[True, False, True],
@@ -275,6 +278,7 @@ def run_simulation(strategy_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFram
 
 
 def plot_charts(equity_df: pd.DataFrame, strategy_df: pd.DataFrame) -> None:
+    PROCESSED_BACKTEST_DIR.mkdir(parents=True, exist_ok=True)
     plt.figure(figsize=(12, 6))
     plt.plot(equity_df["date"], equity_df["equity"])
     plt.title("Equity Curve")
@@ -332,7 +336,7 @@ def main() -> None:
     print("Loading and merging trades + composite quant scores...")
     strategy_df = load_and_merge(min_components, min_buy_price)
     print(
-        f"Eligible trades (Buy/Strong Buy, ≥{min_components} factors, "
+        f"Eligible trades (Buy/Strong Buy, >={min_components} factors, "
         f"price>${min_buy_price}): {len(strategy_df):,}"
     )
     if len(strategy_df) == 0:
@@ -364,14 +368,17 @@ def main() -> None:
     print(f"Median daily return (equity): {equity_df['daily_return'].median()*100:.2f}%")
     print(f"Max drawdown: {max_drawdown*100:.2f}%")
     print()
-    print(f"Buy date range: {strategy_df['buyDate'].min()} → {strategy_df['sellDate'].max()}")
+    print(f"Buy date range: {strategy_df['buyDate'].min()} to {strategy_df['sellDate'].max()}")
     print(f"Unique buy days: {strategy_df['buyDate'].nunique():,}")
 
+    PROCESSED_BACKTEST_DIR.mkdir(parents=True, exist_ok=True)
     equity_df.to_csv(EQUITY_OUTPUT_FILE, index=False)
+    strategy_df.to_csv(PORTFOLIO_TRADES_FILE, index=False)
     plot_charts(equity_df, strategy_df)
 
     print()
     print(f"Saved {EQUITY_OUTPUT_FILE}")
+    print(f"Saved {PORTFOLIO_TRADES_FILE}")
     print(f"Saved {EQUITY_CHART_FILE}, {DRAWDOWN_CHART_FILE}, {RETURNS_HIST_FILE}")
 
 

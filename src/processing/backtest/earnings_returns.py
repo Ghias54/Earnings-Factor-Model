@@ -7,21 +7,24 @@ from pathlib import Path
 import pandas as pd
 
 # Project root (so `python src/processing/earnings_returns.py` finds config)
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from config import (
+    EARNINGS_FROM_PRICE_START_FILE,
     EARNINGS_BUY_DAYS_BEFORE_ANCHOR,
     EARNINGS_SELL_DAYS_AFTER_ANCHOR,
+    EARNINGS_RETURNS_FILE,
+    EARNINGS_RETURNS_SKIPPED_FILE,
     MIN_BUY_PRICE_FOR_TRADE,
+    PROCESSED_FACTORS_DIR,
     RAW_DATA_DIR,
-    PROCESSED_DATA_DIR,
 )
 
 
-EARNINGS_FILE = PROCESSED_DATA_DIR / "earnings_from_price_start.csv"
+EARNINGS_FILE = EARNINGS_FROM_PRICE_START_FILE
 PRICES_FILE = RAW_DATA_DIR / "daily_prices_from_clean_universe.csv"
 
-TAKEN_OUTPUT_FILE = PROCESSED_DATA_DIR / "earnings_returns.csv"
-SKIPPED_OUTPUT_FILE = PROCESSED_DATA_DIR / "earnings_returns_skipped.csv"
+TAKEN_OUTPUT_FILE = EARNINGS_RETURNS_FILE
+SKIPPED_OUTPUT_FILE = EARNINGS_RETURNS_SKIPPED_FILE
 
 
 def load_earnings() -> pd.DataFrame:
@@ -217,7 +220,7 @@ def run(
     sell_days_after_anchor: int | None = None,
     min_buy_price: float | None = None,
 ) -> None:
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_FACTORS_DIR.mkdir(parents=True, exist_ok=True)
 
     buy_days_before_anchor = (
         buy_days_before_anchor

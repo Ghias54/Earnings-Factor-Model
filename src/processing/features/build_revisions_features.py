@@ -10,12 +10,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import PROCESSED_DATA_DIR
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from config import (
+    EARNINGS_EVENTS_FILE,
+    PROCESSED_FACTORS_DIR,
+    REVISIONS_FEATURES_FILE,
+    VALUATION_FEATURES_FILE,
+)
 
-VALUATION_FILE = PROCESSED_DATA_DIR / "valuation_features.csv"
-EARNINGS_FILE  = PROCESSED_DATA_DIR / "earnings_events.csv"
-OUTPUT_FILE    = PROCESSED_DATA_DIR / "revisions_features.csv"
+VALUATION_FILE = VALUATION_FEATURES_FILE
+EARNINGS_FILE = EARNINGS_EVENTS_FILE
+OUTPUT_FILE = REVISIONS_FEATURES_FILE
 
 
 def run() -> None:
@@ -66,7 +71,7 @@ def run() -> None:
         out["eps_fwd_step_pct"] = np.nan
 
     out = out.sort_values(["ticker", "earningsAnnouncementDate"]).reset_index(drop=True)
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_FACTORS_DIR.mkdir(parents=True, exist_ok=True)
     out.to_csv(OUTPUT_FILE, index=False)
     print(f"Saved {len(out):,} rows to {OUTPUT_FILE}")
 

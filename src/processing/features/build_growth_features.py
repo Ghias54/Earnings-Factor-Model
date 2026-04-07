@@ -4,12 +4,18 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import RAW_DATA_DIR, PROCESSED_DATA_DIR
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from config import (
+    EARNINGS_FROM_PRICE_START_FILE,
+    GROWTH_FEATURES_FILE,
+    PROCESSED_FACTORS_DIR,
+    RAW_DATA_DIR,
+    TTM_FINANCIALS_ENRICHED_FILE,
+)
 
 HISTORY_FILE = RAW_DATA_DIR / "earnings_from_clean_universe.csv"
-TARGET_FILE = PROCESSED_DATA_DIR / "earnings_from_price_start.csv"
-OUTPUT_FILE = PROCESSED_DATA_DIR / "growth_features.csv"
+TARGET_FILE = EARNINGS_FROM_PRICE_START_FILE
+OUTPUT_FILE = GROWTH_FEATURES_FILE
 
 
 def run() -> None:
@@ -79,7 +85,7 @@ def run() -> None:
     out = target.merge(keep, on=["ticker", "earningsAnnouncementDate"], how="left")
 
     # Enrich with EBITDA YoY and FCF YoY from financial statements (if available)
-    ENRICHED_FILE = PROCESSED_DATA_DIR / "ttm_financials_enriched.csv"
+    ENRICHED_FILE = TTM_FINANCIALS_ENRICHED_FILE
     if ENRICHED_FILE.exists():
         print("Merging EBITDA YoY and FCF YoY from enriched TTM financials...")
         enr = pd.read_csv(ENRICHED_FILE, low_memory=False)
@@ -114,7 +120,7 @@ def run() -> None:
         out["ttmEbitda_yoy"] = np.nan
         out["ttmFcf_yoy"]    = np.nan
 
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_FACTORS_DIR.mkdir(parents=True, exist_ok=True)
     out.to_csv(OUTPUT_FILE, index=False)
     print(f"Saved {len(out)} rows to {OUTPUT_FILE}")
 

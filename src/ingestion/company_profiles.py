@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import FMP_API_KEY, FMP_BASE_URL, RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config import COMPANIES_CLEANED_FILE, FMP_API_KEY, FMP_BASE_URL, RAW_DATA_DIR
 
 OUTPUT_FILE = RAW_DATA_DIR / "company_profiles.csv"
 ERROR_FILE = RAW_DATA_DIR / "company_profiles_errors.csv"
@@ -16,8 +16,7 @@ CHECKPOINT_EVERY = 100
 
 
 def load_cleaned_companies() -> pd.DataFrame:
-    path = PROCESSED_DATA_DIR / "companies_cleaned.csv"
-    return pd.read_csv(path)
+    return pd.read_csv(COMPANIES_CLEANED_FILE)
 
 
 def fetch_profile(session: requests.Session, ticker: str):

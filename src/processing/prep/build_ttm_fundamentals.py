@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 
 # allow import from project root
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from config import RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config import EARNINGS_FROM_PRICE_START_FILE, PROCESSED_FACTORS_DIR, RAW_DATA_DIR, TTM_FUNDAMENTALS_FILE
 
 
 print("Starting TTM fundamentals build...")
@@ -16,7 +16,7 @@ print("Starting TTM fundamentals build...")
 # SETTINGS
 # =========================
 HISTORY_FILE = RAW_DATA_DIR / "earnings_from_clean_universe.csv"
-TARGET_FILE = PROCESSED_DATA_DIR / "earnings_from_price_start.csv"
+TARGET_FILE = EARNINGS_FROM_PRICE_START_FILE
 
 
 # =========================
@@ -138,7 +138,8 @@ ttm = ttm.sort_values(
 # =========================
 # SAVE
 # =========================
-output_path = PROCESSED_DATA_DIR / "ttm_fundamentals.csv"
+PROCESSED_FACTORS_DIR.mkdir(parents=True, exist_ok=True)
+output_path = TTM_FUNDAMENTALS_FILE
 ttm.to_csv(output_path, index=False)
 
 

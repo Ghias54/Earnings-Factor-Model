@@ -25,12 +25,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from config import MASTER_DAILY_QUANT_PANEL_FILE, PROCESSED_DATA_DIR, RAW_DATA_DIR
+from config import COMPOSITE_SCORES_FILE, MASTER_DAILY_QUANT_PANEL_FILE, RAW_DATA_DIR
 
 PRICES_FILE = RAW_DATA_DIR / "daily_prices_from_clean_universe.csv"
-COMPOSITE_FILE = PROCESSED_DATA_DIR / "composite_quant_scores.csv"
+COMPOSITE_FILE = COMPOSITE_SCORES_FILE
 DEFAULT_OUT = MASTER_DAILY_QUANT_PANEL_FILE
 
 
@@ -115,7 +115,7 @@ def run(
         parts.append(m)
     merged = pd.concat(parts, ignore_index=True)
 
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(output_path, index=False, compression=compression)
     print(f"Saved {len(merged):,} rows to {output_path}")
 

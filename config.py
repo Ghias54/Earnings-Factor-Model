@@ -65,6 +65,10 @@ DATA_DIR = BASE_DIR / "data"
 RAW_DATA_DIR = DATA_DIR / "raw"
 INTERIM_DATA_DIR = DATA_DIR / "interim"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
+PROCESSED_FACTORS_DIR = PROCESSED_DATA_DIR / "factors"
+PROCESSED_EVALUATION_DIR = PROCESSED_DATA_DIR / "evaluation"
+PROCESSED_BACKTEST_DIR = PROCESSED_DATA_DIR / "backtest"
+PROCESSED_PANELS_DIR = PROCESSED_DATA_DIR / "panels"
 
 # Earnings event trade geometry (trading days vs last trading day before announcement).
 # Buy: `buy_days_before_anchor` sessions before that anchor; sell: `sell_days_after_anchor`
@@ -74,5 +78,38 @@ EARNINGS_SELL_DAYS_AFTER_ANCHOR = 25
 # Trades require buy price strictly above this (same idea in earnings_returns + simulate_portfolio).
 MIN_BUY_PRICE_FOR_TRADE = 1.0
 
-# Daily panel: prices + point-in-time composite (see build_master_daily_panel.py)
-MASTER_DAILY_QUANT_PANEL_FILE = PROCESSED_DATA_DIR / "master_daily_quant_panel.csv.gz"
+# Core processed files (factors pipeline)
+COMPANIES_CLEANED_FILE = PROCESSED_FACTORS_DIR / "companies_cleaned.csv"
+COMPANIES_ENRICHED_FILE = PROCESSED_FACTORS_DIR / "companies_enriched.csv"
+EARNINGS_FROM_PRICE_START_FILE = PROCESSED_FACTORS_DIR / "earnings_from_price_start.csv"
+TTM_FUNDAMENTALS_FILE = PROCESSED_FACTORS_DIR / "ttm_fundamentals.csv"
+TTM_FINANCIALS_ENRICHED_FILE = PROCESSED_FACTORS_DIR / "ttm_financials_enriched.csv"
+VALUATION_FEATURES_FILE = PROCESSED_FACTORS_DIR / "valuation_features.csv"
+VALUATION_SCORES_FILE = PROCESSED_FACTORS_DIR / "valuation_scores.csv"
+GROWTH_FEATURES_FILE = PROCESSED_FACTORS_DIR / "growth_features.csv"
+GROWTH_SCORES_FILE = PROCESSED_FACTORS_DIR / "growth_scores.csv"
+PROFITABILITY_FEATURES_FILE = PROCESSED_FACTORS_DIR / "profitability_features.csv"
+PROFITABILITY_SCORES_FILE = PROCESSED_FACTORS_DIR / "profitability_scores.csv"
+REVISIONS_FEATURES_FILE = PROCESSED_FACTORS_DIR / "revisions_features.csv"
+REVISIONS_SCORES_FILE = PROCESSED_FACTORS_DIR / "revisions_scores.csv"
+MOMENTUM_FEATURES_FILE = PROCESSED_FACTORS_DIR / "momentum_features.csv"
+MOMENTUM_SCORES_FILE = PROCESSED_FACTORS_DIR / "momentum_scores.csv"
+COMPOSITE_SCORES_FILE = PROCESSED_FACTORS_DIR / "composite_quant_scores.csv"
+EARNINGS_RETURNS_FILE = PROCESSED_FACTORS_DIR / "earnings_returns.csv"
+EARNINGS_RETURNS_SKIPPED_FILE = PROCESSED_FACTORS_DIR / "earnings_returns_skipped.csv"
+EARNINGS_EVENTS_FILE = PROCESSED_FACTORS_DIR / "earnings_events.csv"
+
+# Evaluation files
+SA_BENCHMARK_FILE = PROCESSED_EVALUATION_DIR / "sa_benchmark.csv"
+SA_BENCHMARK_TEMPLATE_FILE = PROCESSED_EVALUATION_DIR / "sa_benchmark_template.csv"
+SA_ALIGNMENT_REPORT_FILE = PROCESSED_EVALUATION_DIR / "sa_alignment_report.csv"
+
+# Daily panel: prices + point-in-time composite
+MASTER_DAILY_QUANT_PANEL_FILE = PROCESSED_PANELS_DIR / "master_daily_quant_panel.csv.gz"
+
+# Backtest outputs
+EQUITY_CURVE_FILE = PROCESSED_BACKTEST_DIR / "equity_curve.csv"
+PORTFOLIO_TRADES_FILE = PROCESSED_BACKTEST_DIR / "portfolio_trades_taken.csv"
+TRADE_HISTOGRAM_FILE = PROCESSED_BACKTEST_DIR / "trade_return_histogram.png"
+EQUITY_CURVE_PNG_FILE = PROCESSED_BACKTEST_DIR / "equity_curve.png"
+DRAWDOWN_CURVE_PNG_FILE = PROCESSED_BACKTEST_DIR / "drawdown_curve.png"

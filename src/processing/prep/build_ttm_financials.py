@@ -18,12 +18,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import PROCESSED_DATA_DIR, RAW_DATA_DIR
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from config import (
+    PROCESSED_FACTORS_DIR,
+    RAW_DATA_DIR,
+    TTM_FINANCIALS_ENRICHED_FILE,
+    VALUATION_FEATURES_FILE,
+)
 
 FS_FILE = RAW_DATA_DIR / "financial_statements_quarterly.csv"
-EVENTS_FILE = PROCESSED_DATA_DIR / "valuation_features.csv"
-OUTPUT_FILE = PROCESSED_DATA_DIR / "ttm_financials_enriched.csv"
+EVENTS_FILE = VALUATION_FEATURES_FILE
+OUTPUT_FILE = TTM_FINANCIALS_ENRICHED_FILE
 
 # Flow items: sum last 4 quarters
 FLOW_COLS = ["revenue", "grossProfit", "ebitda", "operatingIncome", "netIncome",
@@ -87,9 +92,9 @@ def run() -> None:
 
     out = pd.DataFrame(out_rows)
     out = out.sort_values(["ticker", "earningsAnnouncementDate"]).reset_index(drop=True)
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_FACTORS_DIR.mkdir(parents=True, exist_ok=True)
     out.to_csv(OUTPUT_FILE, index=False)
-    print(f"\nSaved {len(out):,} rows → {OUTPUT_FILE}")
+    print(f"\nSaved {len(out):,} rows to {OUTPUT_FILE}")
 
 
 def _compute_ttm(ticker: str, ev_row: pd.Series, avail: pd.DataFrame) -> dict:

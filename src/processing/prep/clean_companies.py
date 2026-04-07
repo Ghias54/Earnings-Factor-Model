@@ -1,7 +1,7 @@
 import re
 import pandas as pd
 
-from config import RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config import COMPANIES_CLEANED_FILE, PROCESSED_FACTORS_DIR, RAW_DATA_DIR
 
 
 # Remove ETFs / funds
@@ -95,10 +95,9 @@ def clean_universe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def save_cleaned_universe(df: pd.DataFrame) -> None:
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = PROCESSED_DATA_DIR / "companies_cleaned.csv"
-    df.to_csv(output_path, index=False)
-    print(f"Saved cleaned universe to {output_path}")
+    PROCESSED_FACTORS_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_csv(COMPANIES_CLEANED_FILE, index=False)
+    print(f"Saved cleaned universe to {COMPANIES_CLEANED_FILE}")
 
 
 def run() -> None:

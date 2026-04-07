@@ -18,16 +18,24 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import PROCESSED_DATA_DIR
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from config import (
+    COMPOSITE_SCORES_FILE,
+    GROWTH_SCORES_FILE,
+    MOMENTUM_SCORES_FILE,
+    PROFITABILITY_SCORES_FILE,
+    PROCESSED_EVALUATION_DIR,
+    REVISIONS_SCORES_FILE,
+    VALUATION_SCORES_FILE,
+)
 
-COMPOSITE_FILE = PROCESSED_DATA_DIR / "composite_quant_scores.csv"
+COMPOSITE_FILE = COMPOSITE_SCORES_FILE
 FACTOR_FILES = {
-    "Valuation": PROCESSED_DATA_DIR / "valuation_scores.csv",
-    "Growth": PROCESSED_DATA_DIR / "growth_scores.csv",
-    "Profitability": PROCESSED_DATA_DIR / "profitability_scores.csv",
-    "Momentum": PROCESSED_DATA_DIR / "momentum_scores.csv",
-    "EPS Rev.": PROCESSED_DATA_DIR / "revisions_scores.csv",
+    "Valuation": VALUATION_SCORES_FILE,
+    "Growth": GROWTH_SCORES_FILE,
+    "Profitability": PROFITABILITY_SCORES_FILE,
+    "Momentum": MOMENTUM_SCORES_FILE,
+    "EPS Rev.": REVISIONS_SCORES_FILE,
 }
 
 
@@ -154,8 +162,9 @@ def run(ticker: str, as_of: str | None) -> tuple[Path, Path]:
 
     snapshot = build_snapshot(history, as_of_ts)
 
-    history_file = PROCESSED_DATA_DIR / f"sa_compare_{t}_history.csv"
-    snapshot_file = PROCESSED_DATA_DIR / f"sa_compare_{t}_snapshot.csv"
+    PROCESSED_EVALUATION_DIR.mkdir(parents=True, exist_ok=True)
+    history_file = PROCESSED_EVALUATION_DIR / f"sa_compare_{t}_history.csv"
+    snapshot_file = PROCESSED_EVALUATION_DIR / f"sa_compare_{t}_snapshot.csv"
     history.to_csv(history_file, index=False)
     snapshot.to_csv(snapshot_file, index=False)
     return history_file, snapshot_file

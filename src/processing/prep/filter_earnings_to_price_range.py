@@ -1,16 +1,16 @@
 import pandas as pd
 
-from config import RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config import EARNINGS_FROM_PRICE_START_FILE, PROCESSED_FACTORS_DIR, RAW_DATA_DIR
 
 
 EARNINGS_FILE = RAW_DATA_DIR / "earnings_from_clean_universe.csv"
-OUTPUT_FILE = PROCESSED_DATA_DIR / "earnings_from_price_start.csv"
+OUTPUT_FILE = EARNINGS_FROM_PRICE_START_FILE
 
 PRICE_START_DATE = "2021-03-29"
 
 
 def run() -> None:
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_FACTORS_DIR.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(EARNINGS_FILE)
 

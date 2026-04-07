@@ -10,7 +10,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import ENV_FILE_PATH, FMP_API_KEY, FMP_BASE_URL, RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config import COMPANIES_CLEANED_FILE, ENV_FILE_PATH, FMP_API_KEY, FMP_BASE_URL, RAW_DATA_DIR
 
 OUTPUT_FILE = RAW_DATA_DIR / "analyst_estimates_quarterly.csv"
 ERROR_FILE = RAW_DATA_DIR / "analyst_estimates_errors.csv"
@@ -60,13 +60,13 @@ class SlidingWindowRateLimiter:
 
 
 def load_cleaned_companies() -> pd.DataFrame:
-    path = PROCESSED_DATA_DIR / "companies_cleaned.csv"
+    path = COMPANIES_CLEANED_FILE
     if not path.is_file():
         raise SystemExit(
             f"Missing {path.resolve()}\n"
             "Create it by running: PYTHONPATH=. python src/ingestion/companies.py\n"
-            "then: PYTHONPATH=. python src/processing/clean_companies.py\n"
-            "Or copy DataSets/companies_cleaned.csv to data/processed/companies_cleaned.csv"
+            "then: PYTHONPATH=. python src/processing/prep/clean_companies.py\n"
+            "Or copy DataSets/companies_cleaned.csv to data/processed/factors/companies_cleaned.csv"
         )
     return pd.read_csv(path)
 

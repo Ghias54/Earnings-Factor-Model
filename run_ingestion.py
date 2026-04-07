@@ -24,13 +24,13 @@ ROOT = Path(__file__).resolve().parent
 
 STEPS = [
     "src/ingestion/companies.py",
-    "src/processing/clean_companies.py",
+    "src/processing/prep/clean_companies.py",
     "src/ingestion/prices.py",
     "src/ingestion/earnings.py",
-    "src/processing/filter_earnings_to_price_range.py",
+    "src/processing/prep/filter_earnings_to_price_range.py",
     "src/ingestion/shares_history.py",
     "src/ingestion/company_profiles.py",
-    "src/processing/enrich_companies.py",
+    "src/processing/prep/enrich_companies.py",
     "src/ingestion/analyst_estimates.py",
     "src/ingestion/financial_statements.py",   # income stmt + balance sheet + cash flow
 ]
