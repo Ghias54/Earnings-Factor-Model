@@ -1,14 +1,7 @@
 """
-Build revisions features using EPS surprise (actual vs. consensus estimate at earnings).
-
-The original approach tried to compute 90-day estimate changes using
-analyst_estimates_quarterly.csv, but that file only contains ONE snapshot per
-reporting period (the estimate as of the data pull date), not a time-series of
-how estimates evolved.  Comparing the current quarter's estimate against the prior
-quarter's estimate produces cross-quarter seasonal noise, not real revisions.
-
-Instead we use EPS surprise % — a strong proxy for analyst estimate revisions
-because large beats typically trigger upward revisions and vice versa.
+Build revisions features from the same "Our Model" primitives:
+- EPS surprise % (actual vs estimate)
+- Forward-curve step % from one snapshot sequence (estimated EPS vs prior estimate)
 """
 
 import sys
@@ -33,14 +26,14 @@ def run() -> None:
     val["anchorDate"]               = pd.to_datetime(val["anchorDate"],               errors="coerce")
     val["ticker"]                   = val["ticker"].astype(str).str.strip()
 
-    # EPS surprise from earnings events
+    # Revisions proxies from earnings events
     if EARNINGS_FILE.exists():
         ev = pd.read_csv(EARNINGS_FILE, low_memory=False,
                          usecols=["ticker", "earningsAnnouncementDate", "actualEps", "estimatedEps"])
         ev["earningsAnnouncementDate"] = pd.to_datetime(ev["earningsAnnouncementDate"], errors="coerce")
         ev["ticker"]        = ev["ticker"].astype(str).str.strip()
-        ev["actualEps"]     = pd.to_numeric(ev["actualEps"],    errors="coerce")
-        ev["estimatedEps"]  = pd.to_numeric(ev["estimatedEps"], errors="coerce")
+        ev["actualEps"] = pd.to_numeric(ev["actualEps"], errors="coerce")
+        ev["estimatedEps"] = pd.to_numeric(ev["estimatedEps"], errors="coerce")
 
         # surprise % = (actual - estimated) / |estimated|; NaN if no estimate
         ev["eps_surprise_pct"] = np.where(
@@ -51,14 +44,26 @@ def run() -> None:
         # Cap extreme outliers
         ev.loc[ev["eps_surprise_pct"].abs() > 5, "eps_surprise_pct"] = np.nan
 
-        ev = ev[["ticker", "earningsAnnouncementDate", "eps_surprise_pct"]].drop_duplicates(
+        # Forward curve step from one-snapshot estimate sequence:
+        # compare current estimate to prior report's estimate for same ticker.
+        ev = ev.sort_values(["ticker", "earningsAnnouncementDate"], kind="mergesort").reset_index(drop=True)
+        prev_est = ev.groupby("ticker")["estimatedEps"].shift(1)
+        ev["eps_fwd_step_pct"] = np.where(
+            prev_est.abs() > 1e-9,
+            (ev["estimatedEps"] - prev_est) / prev_est.abs(),
+            np.nan,
+        )
+        ev.loc[ev["eps_fwd_step_pct"].abs() > 5, "eps_fwd_step_pct"] = np.nan
+
+        ev = ev[["ticker", "earningsAnnouncementDate", "eps_surprise_pct", "eps_fwd_step_pct"]].drop_duplicates(
             subset=["ticker", "earningsAnnouncementDate"]
         )
         out = val.merge(ev, on=["ticker", "earningsAnnouncementDate"], how="left")
     else:
-        print("No earnings_events.csv found; eps_surprise_pct will be NaN.")
+        print("No earnings_events.csv found; revisions features will be NaN.")
         out = val.copy()
         out["eps_surprise_pct"] = np.nan
+        out["eps_fwd_step_pct"] = np.nan
 
     out = out.sort_values(["ticker", "earningsAnnouncementDate"]).reset_index(drop=True)
     PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)

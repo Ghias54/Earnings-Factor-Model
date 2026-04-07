@@ -28,12 +28,20 @@ def run() -> None:
     val = pd.read_csv(VALUATION_FILE, low_memory=False)
     val["earningsAnnouncementDate"] = pd.to_datetime(val["earningsAnnouncementDate"], errors="coerce")
     val["ticker"] = val["ticker"].astype(str).str.strip()
+    if "anchorDate" in val.columns:
+        val["anchorDate"] = pd.to_datetime(val["anchorDate"], errors="coerce")
+        val = val.sort_values(["ticker", "earningsAnnouncementDate", "anchorDate"])
+    else:
+        val = val.sort_values(["ticker", "earningsAnnouncementDate"])
+    val = val.drop_duplicates(["ticker", "earningsAnnouncementDate"], keep="last")
 
     if ENRICHED_FILE.exists():
         print("Using enriched TTM financials (gross margin, EBITDA, ROA, FCF)...")
         ttm = pd.read_csv(ENRICHED_FILE, low_memory=False)
         ttm["earningsAnnouncementDate"] = pd.to_datetime(ttm["earningsAnnouncementDate"], errors="coerce")
         ttm["ticker"] = ttm["ticker"].astype(str).str.strip()
+        ttm = ttm.sort_values(["ticker", "earningsAnnouncementDate"])
+        ttm = ttm.drop_duplicates(["ticker", "earningsAnnouncementDate"], keep="last")
 
         for c in ["ttm_revenue","ttm_grossProfit","ttm_ebitda","ttm_operatingIncome",
                   "ttm_netIncome","ttm_freeCashFlow","ttm_totalAssets",
@@ -46,7 +54,7 @@ def run() -> None:
                  "ttm_revenue","ttm_grossProfit","ttm_ebitda","ttm_operatingIncome",
                  "ttm_netIncome","ttm_freeCashFlow","ttm_totalAssets",
                  "ttm_totalStockholdersEquity"]],
-            on=["ticker","earningsAnnouncementDate"], how="left"
+            on=["ticker","earningsAnnouncementDate"], how="left", validate="one_to_one"
         )
 
         rev = df["ttm_revenue"]
@@ -103,7 +111,7 @@ def run() -> None:
 
     PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
     out.to_csv(OUTPUT_FILE, index=False)
-    print(f"Saved {len(out):,} rows → {OUTPUT_FILE}")
+    print(f"Saved {len(out):,} rows to {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":

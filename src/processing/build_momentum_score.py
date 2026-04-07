@@ -21,28 +21,32 @@ def run() -> None:
         df["earningsAnnouncementDate"], errors="coerce"
     )
 
-    df["mom63"]  = pd.to_numeric(df["mom63"],  errors="coerce")
+    df["mom21"] = pd.to_numeric(df["mom21"], errors="coerce") if "mom21" in df.columns else np.nan
+    df["mom63"] = pd.to_numeric(df["mom63"], errors="coerce")
     df["mom126"] = pd.to_numeric(df["mom126"], errors="coerce")
     df["mom252"] = pd.to_numeric(df["mom252"], errors="coerce") if "mom252" in df.columns else np.nan
 
     # Rank within calendar quarter so the cross-section is ~2,000 stocks, not ~30.
     df["_quarter"] = df["earningsAnnouncementDate"].dt.to_period("Q")
 
-    # SA-style momentum: 3M + 6M + 12M weighted average (12M primary).
-    df["mom63_score"]  = df.groupby("_quarter")["mom63"].rank(pct=True, ascending=True)
+    # "Our Model": 1M/3M/6M/12M ranks over full quarter cross-section.
+    df["mom21_score"] = df.groupby("_quarter")["mom21"].rank(pct=True, ascending=True)
+    df["mom63_score"] = df.groupby("_quarter")["mom63"].rank(pct=True, ascending=True)
     df["mom126_score"] = df.groupby("_quarter")["mom126"].rank(pct=True, ascending=True)
     df["mom252_score"] = df.groupby("_quarter")["mom252"].rank(pct=True, ascending=True)
 
-    # Weighted: 12M=0.5, 6M=0.3, 3M=0.2 — match the typical Jegadeesh-Titman weighting
+    # Equal blend across available horizons for stable coverage.
     score_parts  = pd.DataFrame({
-        "s63":  df["mom63_score"]  * 0.20,
-        "s126": df["mom126_score"] * 0.30,
-        "s252": df["mom252_score"] * 0.50,
+        "s21": df["mom21_score"] * 0.25,
+        "s63": df["mom63_score"] * 0.25,
+        "s126": df["mom126_score"] * 0.25,
+        "s252": df["mom252_score"] * 0.25,
     })
     weight_parts = pd.DataFrame({
-        "w63":  df["mom63_score"].notna()  * 0.20,
-        "w126": df["mom126_score"].notna() * 0.30,
-        "w252": df["mom252_score"].notna() * 0.50,
+        "w21": df["mom21_score"].notna() * 0.25,
+        "w63": df["mom63_score"].notna() * 0.25,
+        "w126": df["mom126_score"].notna() * 0.25,
+        "w252": df["mom252_score"].notna() * 0.25,
     })
     total_weight = weight_parts.sum(axis=1)
     total_score  = score_parts.fillna(0).sum(axis=1)

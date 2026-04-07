@@ -15,14 +15,16 @@ INPUT_FILE  = PROCESSED_DATA_DIR / "profitability_features.csv"
 OUTPUT_FILE = PROCESSED_DATA_DIR / "profitability_scores.csv"
 
 # Weighted metric config: (column, weight, ascending)
-# Higher margin/return = better for all metrics
+# Our model: weighted margins + ROA/ROE (+ FCF margin).
+# Higher margin/return = better for all metrics.
 METRICS = [
-    ("net_margin",      0.20, True),
-    ("gross_margin",    0.20, True),
-    ("ebitda_margin",   0.25, True),
-    ("operating_margin",0.15, True),
-    ("roa",             0.10, True),
-    ("roe",             0.10, True),
+    ("net_margin",       0.18, True),
+    ("gross_margin",     0.17, True),
+    ("ebitda_margin",    0.20, True),
+    ("operating_margin", 0.12, True),
+    ("fcf_margin",       0.15, True),
+    ("roa",              0.09, True),
+    ("roe",              0.09, True),
 ]
 
 
@@ -68,7 +70,7 @@ def run() -> None:
     df = df.drop(columns=[c for c in df.columns if c.startswith("_")])
 
     df.to_csv(OUTPUT_FILE, index=False)
-    print(f"Saved {len(df):,} rows → {OUTPUT_FILE}")
+    print(f"Saved {len(df):,} rows to {OUTPUT_FILE}")
     for col, _, _ in available_metrics:
         n = df[f"profitability_score"].notna().sum()
     print(f"  profitability_score coverage: {df['profitability_score'].notna().sum():,}/{len(df):,}")

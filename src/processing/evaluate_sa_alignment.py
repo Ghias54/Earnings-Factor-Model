@@ -13,6 +13,7 @@ Outputs:
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -20,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import PROCESSED_DATA_DIR
+from config import MASTER_DAILY_QUANT_PANEL_FILE, PROCESSED_DATA_DIR
 
 BENCHMARK_FILE = PROCESSED_DATA_DIR / "sa_benchmark.csv"
 OUTPUT_FILE = PROCESSED_DATA_DIR / "sa_alignment_report.csv"
@@ -68,6 +69,22 @@ def _safe_num(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
 
 
+def _dedupe_event_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure one row per (ticker, earningsAnnouncementDate) to prevent merge explosions.
+    Keep last row after stable sort.
+    """
+    out = df.copy()
+    out["ticker"] = out["ticker"].astype(str).str.strip().str.upper()
+    out["earningsAnnouncementDate"] = pd.to_datetime(out["earningsAnnouncementDate"], errors="coerce")
+    out = out.sort_values(["ticker", "earningsAnnouncementDate"], kind="mergesort")
+    dups = out.duplicated(["ticker", "earningsAnnouncementDate"]).sum()
+    if dups:
+        print(f"Deduplicating event keys: dropped {dups:,} duplicate rows")
+        out = out.drop_duplicates(["ticker", "earningsAnnouncementDate"], keep="last")
+    return out
+
+
 def load_our_scores() -> pd.DataFrame:
     comp = pd.read_csv(PROCESSED_DATA_DIR / "composite_quant_scores.csv", low_memory=False)
     val = pd.read_csv(
@@ -96,11 +113,18 @@ def load_our_scores() -> pd.DataFrame:
         low_memory=False,
     )
 
-    out = comp.merge(val, on=["ticker", "earningsAnnouncementDate"], how="left")
-    out = out.merge(grw, on=["ticker", "earningsAnnouncementDate"], how="left")
-    out = out.merge(prof, on=["ticker", "earningsAnnouncementDate"], how="left")
-    out = out.merge(mom, on=["ticker", "earningsAnnouncementDate"], how="left")
-    out = out.merge(rev, on=["ticker", "earningsAnnouncementDate"], how="left")
+    comp = _dedupe_event_rows(comp)
+    val = _dedupe_event_rows(val)
+    grw = _dedupe_event_rows(grw)
+    prof = _dedupe_event_rows(prof)
+    mom = _dedupe_event_rows(mom)
+    rev = _dedupe_event_rows(rev)
+
+    out = comp.merge(val, on=["ticker", "earningsAnnouncementDate"], how="left", validate="one_to_one")
+    out = out.merge(grw, on=["ticker", "earningsAnnouncementDate"], how="left", validate="one_to_one")
+    out = out.merge(prof, on=["ticker", "earningsAnnouncementDate"], how="left", validate="one_to_one")
+    out = out.merge(mom, on=["ticker", "earningsAnnouncementDate"], how="left", validate="one_to_one")
+    out = out.merge(rev, on=["ticker", "earningsAnnouncementDate"], how="left", validate="one_to_one")
 
     out["ticker"] = out["ticker"].astype(str).str.strip().str.upper()
     out["date"] = pd.to_datetime(out["earningsAnnouncementDate"], errors="coerce").dt.strftime(
@@ -126,6 +150,82 @@ def load_our_scores() -> pd.DataFrame:
             "our_revisions",
         ]
     ]
+
+
+def _resolve_panel_path() -> Path:
+    for p in (
+        MASTER_DAILY_QUANT_PANEL_FILE,
+        PROCESSED_DATA_DIR / "master_daily_quant_panel.csv.gz",
+        PROCESSED_DATA_DIR / "master_daily_quant_panel.csv",
+    ):
+        if p.is_file():
+            return p
+    raise SystemExit("No daily panel found. Build with build_master_daily_panel.py first.")
+
+
+def load_our_scores_daily(bench: pd.DataFrame) -> pd.DataFrame:
+    panel_path = _resolve_panel_path()
+    keys = bench[["ticker", "date"]].drop_duplicates()
+    tickers = set(keys["ticker"])
+    usecols = [
+        "ticker",
+        "date",
+        "valuation_score",
+        "growth_score",
+        "profitability_score",
+        "revisions_score",
+        "momentum_score",
+        "composite_rating",
+        "composite_grade",
+    ]
+    parts: list[pd.DataFrame] = []
+    for chunk in pd.read_csv(panel_path, usecols=usecols, chunksize=400_000, compression="infer", low_memory=False):
+        chunk["ticker"] = chunk["ticker"].astype(str).str.strip().str.upper()
+        chunk = chunk[chunk["ticker"].isin(tickers)]
+        if chunk.empty:
+            continue
+        chunk["date"] = pd.to_datetime(chunk["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        hit = chunk.merge(keys, on=["ticker", "date"], how="inner")
+        if not hit.empty:
+            parts.append(hit)
+    if not parts:
+        return pd.DataFrame(columns=[
+            "ticker","date","our_quant_score","our_quant_rating","our_valuation",
+            "our_growth","our_profitability","our_momentum","our_revisions"
+        ])
+    out = pd.concat(parts, ignore_index=True).drop_duplicates(subset=["ticker", "date"])
+    out["our_quant_score"] = _safe_num(out["composite_rating"])
+    out["our_quant_rating"] = out["composite_grade"].map(_our_quant_rating_from_grade)
+    for score_col, out_col in [
+        ("valuation_score", "our_valuation"),
+        ("growth_score", "our_growth"),
+        ("profitability_score", "our_profitability"),
+        ("momentum_score", "our_momentum"),
+        ("revisions_score", "our_revisions"),
+    ]:
+        rt = (_safe_num(out[score_col]) * 5).clip(lower=0.1).round(2)
+        out[out_col] = rt.apply(_norm_grade)  # will pass through strings if any
+        # Convert numeric rating -> grade bands
+        out[out_col] = rt.apply(
+            lambda x: (
+                "A+" if pd.notna(x) and x >= 4.5 else
+                "A" if pd.notna(x) and x >= 4.0 else
+                "A-" if pd.notna(x) and x >= 3.67 else
+                "B+" if pd.notna(x) and x >= 3.33 else
+                "B" if pd.notna(x) and x >= 3.0 else
+                "B-" if pd.notna(x) and x >= 2.67 else
+                "C+" if pd.notna(x) and x >= 2.33 else
+                "C" if pd.notna(x) and x >= 2.0 else
+                "C-" if pd.notna(x) and x >= 1.67 else
+                "D+" if pd.notna(x) and x >= 1.33 else
+                "D" if pd.notna(x) and x >= 1.0 else
+                "F" if pd.notna(x) else np.nan
+            )
+        )
+    return out[[
+        "ticker", "date", "our_quant_score", "our_quant_rating",
+        "our_valuation", "our_growth", "our_profitability", "our_momentum", "our_revisions"
+    ]]
 
 
 def load_benchmark() -> pd.DataFrame:
@@ -155,6 +255,8 @@ def load_benchmark() -> pd.DataFrame:
     for c in ["sa_valuation", "sa_growth", "sa_profitability", "sa_momentum", "sa_revisions"]:
         b[c] = b[c].map(_norm_grade)
     b = b.dropna(subset=["ticker", "date"]).copy()
+    b = b.sort_values(["ticker", "date"], kind="mergesort")
+    b = b.drop_duplicates(["ticker", "date"], keep="last")
     return b
 
 
@@ -182,9 +284,9 @@ def print_metrics(df: pd.DataFrame) -> None:
         print(f"{label} grade exact match: {m:.1f}%")
 
 
-def run() -> None:
-    ours = load_our_scores()
+def run(*, join: str) -> None:
     bench = load_benchmark()
+    ours = load_our_scores_daily(bench) if join == "daily" else load_our_scores()
     merged = bench.merge(ours, on=["ticker", "date"], how="left")
     merged["quant_score_abs_error"] = (
         pd.to_numeric(merged["our_quant_score"], errors="coerce")
@@ -199,9 +301,12 @@ def run() -> None:
     merged = merged.sort_values(["ticker", "date"]).reset_index(drop=True)
 
     merged.to_csv(OUTPUT_FILE, index=False)
-    print(f"Saved {OUTPUT_FILE}")
+    print(f"Saved {OUTPUT_FILE} (join={join})")
     print_metrics(merged.dropna(subset=["our_quant_score", "sa_quant_score"]))
 
 
 if __name__ == "__main__":
-    run()
+    ap = argparse.ArgumentParser(description="Evaluate SA alignment")
+    ap.add_argument("--join", choices=["daily", "earnings"], default="daily")
+    args = ap.parse_args()
+    run(join=args.join)
