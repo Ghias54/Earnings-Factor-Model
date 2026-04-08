@@ -1,49 +1,35 @@
-"""
-Earnings-event portfolio backtest.
-
-Methodology (research / simplified execution model):
-- One candidate trade per (ticker, earningsAnnouncementDate) from earnings_returns.
-- Merge momentum + composite quant scores as of each buy date (backward merge_asof on the
-  last announced earnings snapshot on or before buyDate; avoids look-ahead).
-- Only enter when quant is Buy or Strong Buy (composite_rating / composite_grade).
-- Each calendar day: close matured trades first, then open new trades up to max_positions.
-- New trades that day are the highest composite_rating first.
-- Equal-weight allocation of available cash across available slots for that day's openings.
-- Round-trip transaction cost applied to each trade's return.
-
-Not live execution (no slippage, borrow, partial fills, or exchange hours).
-"""
+"""Reusable earnings-event portfolio backtest for research dashboards and CLI runs."""
 
 from __future__ import annotations
 
 import argparse
+import math
 import sys
-from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Project root (this file lives under src/processing/backtest/)
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+ROOT = Path(__file__).resolve().parents[3]
+SRC = ROOT / "src"
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(SRC))
 from config import (
+    COMPANIES_ENRICHED_FILE,
     COMPOSITE_SCORES_FILE,
     DRAWDOWN_CURVE_PNG_FILE,
-    EARNINGS_EVENTS_FILE,
-    EARNINGS_RETURNS_FILE,
     EQUITY_CURVE_FILE,
     EQUITY_CURVE_PNG_FILE,
     MIN_BUY_PRICE_FOR_TRADE,
-    MOMENTUM_FEATURES_FILE,
     PORTFOLIO_TRADES_FILE,
     PROCESSED_BACKTEST_DIR,
     TRADE_HISTOGRAM_FILE,
+    VALUATION_FEATURES_FILE,
 )
+from processing.backtest.earnings_returns import build_earnings_returns, load_earnings, load_prices
 
-RETURNS_FILE = EARNINGS_RETURNS_FILE
-MOMENTUM_FILE = MOMENTUM_FEATURES_FILE
-EVENTS_FILE = EARNINGS_EVENTS_FILE
 COMPOSITE_FILE = COMPOSITE_SCORES_FILE
 
 EQUITY_OUTPUT_FILE = EQUITY_CURVE_FILE
@@ -53,70 +39,127 @@ RETURNS_HIST_FILE = TRADE_HISTOGRAM_FILE
 
 # --- Portfolio knobs ---
 STARTING_CAPITAL = 10_000.0
-MAX_POSITIONS = 10
 TRANSACTION_COST_ROUND_TRIP = 0.002  # 0.20% round-trip per trade
 
-# --- Quant filter: only Buy / Strong Buy ---
+# --- Quant tiers (grades align with SA-style labels in build_sa_comparison_view.quant_label_from_grade) ---
 STRONG_BUY_GRADES = frozenset({"A+", "A"})
 BUY_GRADES = frozenset({"A-", "B+"})
-STRONG_BUY_RATING_MIN = 4.0
-BUY_RATING_MIN = 3.33
+HOLD_GRADES = frozenset({"B", "B-", "C+", "C", "C-"})
+SELL_GRADES = frozenset({"D+", "D"})
+STRONG_SELL_GRADES = frozenset({"F"})
+# Fallback when composite_grade is missing: bands match processing.scoring_utils.rating_to_grade cutoffs
+_STRONG_BUY_R_MIN = 4.0
+_BUY_R_MIN = 3.33
+_HOLD_R_MIN = 1.67
+_SELL_R_MIN = 1.0
+QUANT_TIER_IDS = frozenset({"strong_buy", "buy", "hold", "sell", "strong_sell"})
 DEFAULT_MIN_COMPOSITE_COMPONENTS = 3
 
 
-@dataclass
-class OpenPosition:
-    ticker: str
-    buy_date: pd.Timestamp
-    sell_date: pd.Timestamp
-    allocated: float
-    final_value: float
-    gross_return: float
-    net_return: float
+def _safe_dataframe_to_csv(df: pd.DataFrame, path: Path) -> Path:
+    """Write CSV; on Windows lock (Excel, preview, etc.) fall back to a timestamped file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        df.to_csv(path, index=False)
+        return path
+    except PermissionError:
+        alt = path.with_name(f"{path.stem}_{datetime.now():%Y%m%d_%H%M%S}{path.suffix}")
+        df.to_csv(alt, index=False)
+        print(f"Warning: could not write (file may be open elsewhere): {path}")
+        print(f"  Wrote instead: {alt}")
+        return alt
+
+
+def _safe_savefig(path: Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        plt.savefig(path, dpi=150)
+        return path
+    except PermissionError:
+        alt = path.with_name(f"{path.stem}_{datetime.now():%Y%m%d_%H%M%S}{path.suffix}")
+        plt.savefig(alt, dpi=150)
+        print(f"Warning: could not write (file may be open elsewhere): {path}")
+        print(f"  Wrote instead: {alt}")
+        return alt
 
 
 def quant_tier(composite_rating: float, composite_grade: object) -> str:
-    """Map to strong_buy / buy / hold. Grades win if present; else use rating cutoffs."""
+    """Map composite score to strong_buy / buy / hold / sell / strong_sell. Grade wins when present."""
     g = composite_grade
-    if pd.notna(g) and str(g).strip() in STRONG_BUY_GRADES:
-        return "strong_buy"
-    if pd.notna(g) and str(g).strip() in BUY_GRADES:
-        return "buy"
-    if pd.notna(composite_rating) and float(composite_rating) >= STRONG_BUY_RATING_MIN:
-        return "strong_buy"
-    if pd.notna(composite_rating) and float(composite_rating) >= BUY_RATING_MIN:
-        return "buy"
+    if pd.notna(g):
+        gs = str(g).strip()
+        if gs in STRONG_BUY_GRADES:
+            return "strong_buy"
+        if gs in BUY_GRADES:
+            return "buy"
+        if gs in HOLD_GRADES:
+            return "hold"
+        if gs in SELL_GRADES:
+            return "sell"
+        if gs in STRONG_SELL_GRADES:
+            return "strong_sell"
+    if pd.notna(composite_rating):
+        r = float(composite_rating)
+        if r >= _STRONG_BUY_R_MIN:
+            return "strong_buy"
+        if r >= _BUY_R_MIN:
+            return "buy"
+        if r >= _HOLD_R_MIN:
+            return "hold"
+        if r >= _SELL_R_MIN:
+            return "sell"
+        return "strong_sell"
     return "hold"
 
 
-def load_and_merge(min_components: int, min_buy_price: float) -> pd.DataFrame:
-    returns_df = pd.read_csv(RETURNS_FILE)
-    momentum_df = pd.read_csv(MOMENTUM_FILE)
-    events_df = pd.read_csv(EVENTS_FILE)
+def resolve_quant_ratings(
+    *,
+    quant_rating_mode: str,
+    quant_tiers: set[str] | None,
+) -> set[str]:
+    """Pick included tiers from explicit set or named mode."""
+    rating_map: dict[str, set[str]] = {
+        "buy": {"buy"},
+        "strong_buy": {"strong_buy"},
+        "both": {"buy", "strong_buy"},
+        "hold": {"hold"},
+        "sell": {"sell"},
+        "strong_sell": {"strong_sell"},
+        "bearish": {"sell", "strong_sell"},
+        "all": set(QUANT_TIER_IDS),
+    }
+    if quant_tiers is not None and len(quant_tiers) > 0:
+        bad = quant_tiers - QUANT_TIER_IDS
+        if bad:
+            raise ValueError(f"Invalid quant tier(s): {sorted(bad)}. Expected subset of {sorted(QUANT_TIER_IDS)}.")
+        return set(quant_tiers)
+    return set(rating_map.get(quant_rating_mode, {"buy", "strong_buy"}))
 
-    for df in (returns_df, momentum_df, events_df):
-        df["ticker"] = df["ticker"].astype(str).str.strip()
-        df["earningsAnnouncementDate"] = pd.to_datetime(
-            df["earningsAnnouncementDate"], errors="coerce"
-        )
 
-    df = returns_df.merge(
-        momentum_df,
-        on=["ticker", "earningsAnnouncementDate"],
-        how="inner",
+def _load_trade_candidates(days_before: int, days_after: int, min_buy_price: float) -> pd.DataFrame:
+    earnings_df = load_earnings()
+    prices_df = load_prices()
+    taken_df, _ = build_earnings_returns(
+        earnings_df,
+        prices_df,
+        buy_days_before_anchor=days_before,
+        sell_days_after_anchor=days_after,
+        min_buy_price=min_buy_price,
     )
-    df = df.merge(
-        events_df[["ticker", "earningsAnnouncementDate", "epsSurprise"]],
-        on=["ticker", "earningsAnnouncementDate"],
-        how="left",
-    )
+    if taken_df.empty:
+        return taken_df
+    taken_df["ticker"] = taken_df["ticker"].astype(str).str.strip()
+    taken_df["earningsAnnouncementDate"] = pd.to_datetime(taken_df["earningsAnnouncementDate"], errors="coerce")
+    taken_df["buyDate"] = pd.to_datetime(taken_df["buyDate"], errors="coerce")
+    taken_df["sellDate"] = pd.to_datetime(taken_df["sellDate"], errors="coerce")
+    return taken_df
 
-    df["buyDate"] = pd.to_datetime(df["buyDate"], errors="coerce")
 
+def _attach_composite_asof(df: pd.DataFrame) -> pd.DataFrame:
     if not COMPOSITE_FILE.exists():
-        raise FileNotFoundError(
-            f"Missing {COMPOSITE_FILE}. Run build_composite_quant_score (via run_pipeline.py)."
-        )
+        raise FileNotFoundError(f"Missing {COMPOSITE_FILE}. Run score pipeline first.")
 
     comp_df = pd.read_csv(COMPOSITE_FILE, low_memory=False)
     comp_df["ticker"] = comp_df["ticker"].astype(str).str.strip()
@@ -140,7 +183,7 @@ def load_and_merge(min_components: int, min_buy_price: float) -> pd.DataFrame:
     ]
     comp_for_asof = comp_df[["ticker", "composite_source_announcement_date"] + score_cols]
 
-    df = df.sort_values(["ticker", "buyDate"])
+    df = df.sort_values(["ticker", "buyDate"], kind="mergesort")
     merged_parts: list[pd.DataFrame] = []
     for t, dgrp in df.groupby("ticker", sort=False):
         dgrp = dgrp.sort_values("buyDate", kind="mergesort")
@@ -164,8 +207,54 @@ def load_and_merge(min_components: int, min_buy_price: float) -> pd.DataFrame:
             direction="backward",
         )
         merged_parts.append(m)
-    df = pd.concat(merged_parts, ignore_index=True)
+    return pd.concat(merged_parts, ignore_index=True)
 
+
+def _attach_optional_metadata(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if VALUATION_FEATURES_FILE.exists():
+        val = pd.read_csv(
+            VALUATION_FEATURES_FILE,
+            usecols=lambda c: c in {"ticker", "earningsAnnouncementDate", "marketCap"},
+            low_memory=False,
+        )
+        val["ticker"] = val["ticker"].astype(str).str.strip()
+        val["earningsAnnouncementDate"] = pd.to_datetime(val["earningsAnnouncementDate"], errors="coerce")
+        val["marketCap"] = pd.to_numeric(val.get("marketCap"), errors="coerce")
+        val = val.drop_duplicates(["ticker", "earningsAnnouncementDate"], keep="last")
+        out = out.merge(val, on=["ticker", "earningsAnnouncementDate"], how="left")
+
+    if COMPANIES_ENRICHED_FILE.exists():
+        comp = pd.read_csv(COMPANIES_ENRICHED_FILE, low_memory=False, usecols=lambda c: c in {"ticker", "sector"})
+        comp["ticker"] = comp["ticker"].astype(str).str.strip()
+        comp = comp.drop_duplicates(["ticker"], keep="last")
+        out = out.merge(comp, on="ticker", how="left")
+
+    out["buyVolume"] = pd.to_numeric(out.get("buyVolume"), errors="coerce")
+    out["dollar_volume"] = out["buyPrice"] * out["buyVolume"]
+    return out
+
+
+def build_strategy_trades(
+    *,
+    days_before: int,
+    days_after: int,
+    min_factors: int,
+    min_price: float,
+    min_composite_score: float,
+    quant_ratings: set[str],
+    top_n_per_day: int,
+    transaction_cost_round_trip: float,
+    sector: str | None = None,
+    min_market_cap: float | None = None,
+    min_dollar_volume: float | None = None,
+) -> pd.DataFrame:
+    df = _load_trade_candidates(days_before, days_after, min_price)
+    if df.empty:
+        return df
+
+    df = _attach_composite_asof(df)
+    df = _attach_optional_metadata(df)
     df["returnDecimal"] = pd.to_numeric(df["returnDecimal"], errors="coerce")
     df["buyPrice"] = pd.to_numeric(df["buyPrice"], errors="coerce")
     df["composite_rating"] = pd.to_numeric(df["composite_rating"], errors="coerce")
@@ -186,9 +275,9 @@ def load_and_merge(min_components: int, min_buy_price: float) -> pd.DataFrame:
     ).copy()
 
     if "composite_component_count" in df.columns:
-        df = df[df["composite_component_count"] >= min_components].copy()
-
-    df = df[df["buyPrice"] > min_buy_price].copy()
+        df = df[df["composite_component_count"] >= min_factors].copy()
+    df = df[df["buyPrice"] > min_price].copy()
+    df = df[df["composite_rating"] >= min_composite_score].copy()
 
     grades = (
         df["composite_grade"]
@@ -198,24 +287,33 @@ def load_and_merge(min_components: int, min_buy_price: float) -> pd.DataFrame:
     df["quant_tier"] = [
         quant_tier(r, g) for r, g in zip(df["composite_rating"], grades)
     ]
-    df = df[df["quant_tier"].isin(["strong_buy", "buy"])].copy()
+    df = df[df["quant_tier"].isin(quant_ratings)].copy()
 
-    df["netReturn"] = (df["returnDecimal"] - TRANSACTION_COST_ROUND_TRIP).clip(lower=-1.0)
+    if sector and "sector" in df.columns:
+        df = df[df["sector"].astype(str).str.strip().str.lower() == sector.strip().lower()].copy()
+    if min_market_cap is not None and "marketCap" in df.columns:
+        df = df[df["marketCap"] >= float(min_market_cap)].copy()
+    if min_dollar_volume is not None and "dollar_volume" in df.columns:
+        df = df[df["dollar_volume"] >= float(min_dollar_volume)].copy()
+
+    df["netReturn"] = (df["returnDecimal"] - float(transaction_cost_round_trip)).clip(lower=-1.0)
 
     df = df.sort_values(
         ["buyDate", "composite_rating", "ticker"],
         ascending=[True, False, True],
     ).reset_index(drop=True)
-    df = df.drop_duplicates(subset=["buyDate", "ticker"], keep="first")
+    if top_n_per_day > 0:
+        df = df.groupby("buyDate", group_keys=False).head(top_n_per_day)
+    df = df.drop_duplicates(subset=["buyDate", "ticker"], keep="first").reset_index(drop=True)
 
     return df
 
 
-def run_simulation(strategy_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_simulation(strategy_df: pd.DataFrame, *, starting_capital: float, max_positions: int) -> pd.DataFrame:
     strategy_df = strategy_df.sort_values("buyDate").reset_index(drop=True)
 
-    capital = STARTING_CAPITAL
-    open_positions: list[OpenPosition] = []
+    capital = float(starting_capital)
+    open_positions: list[dict] = []
     equity_rows: list[dict] = []
 
     all_dates = sorted(
@@ -223,16 +321,16 @@ def run_simulation(strategy_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFram
     )
 
     for current_date in all_dates:
-        still_open: list[OpenPosition] = []
+        still_open: list[dict] = []
         for pos in open_positions:
-            if pos.sell_date <= current_date:
-                capital += pos.final_value
+            if pos["sell_date"] <= current_date:
+                capital += pos["final_value"]
             else:
                 still_open.append(pos)
         open_positions = still_open
 
         todays = strategy_df[strategy_df["buyDate"] == current_date]
-        available_slots = MAX_POSITIONS - len(open_positions)
+        available_slots = max_positions - len(open_positions)
 
         if available_slots > 0 and len(todays) > 0:
             trades_to_take = todays.head(available_slots)
@@ -247,19 +345,19 @@ def run_simulation(strategy_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFram
                     break
                 final_value = alloc * (1.0 + float(row["netReturn"]))
                 open_positions.append(
-                    OpenPosition(
-                        ticker=str(row["ticker"]),
-                        buy_date=row["buyDate"],
-                        sell_date=row["sellDate"],
-                        allocated=alloc,
-                        final_value=final_value,
-                        gross_return=float(row["returnDecimal"]),
-                        net_return=float(row["netReturn"]),
-                    )
+                    {
+                        "ticker": str(row["ticker"]),
+                        "buy_date": row["buyDate"],
+                        "sell_date": row["sellDate"],
+                        "allocated": alloc,
+                        "final_value": final_value,
+                        "gross_return": float(row["returnDecimal"]),
+                        "net_return": float(row["netReturn"]),
+                    }
                 )
                 capital -= alloc
 
-        total_equity = capital + sum(p.final_value for p in open_positions)
+        total_equity = capital + sum(p["final_value"] for p in open_positions)
         equity_rows.append(
             {
                 "date": current_date,
@@ -274,10 +372,154 @@ def run_simulation(strategy_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFram
     equity_df["running_max"] = equity_df["equity"].cummax()
     equity_df["drawdown"] = (equity_df["equity"] / equity_df["running_max"]) - 1.0
 
-    return equity_df, strategy_df
+    return equity_df
 
 
-def plot_charts(equity_df: pd.DataFrame, strategy_df: pd.DataFrame) -> None:
+def _yearly_returns(equity_df: pd.DataFrame) -> pd.DataFrame:
+    x = equity_df[["date", "daily_return"]].dropna().copy()
+    if x.empty:
+        return pd.DataFrame(columns=["year", "yearly_return"])
+    x["year"] = pd.to_datetime(x["date"]).dt.year
+    yr = x.groupby("year")["daily_return"].apply(lambda s: (1.0 + s).prod() - 1.0).reset_index()
+    yr = yr.rename(columns={"daily_return": "yearly_return"})
+    return yr
+
+
+def _monthly_heatmap(equity_df: pd.DataFrame) -> pd.DataFrame:
+    x = equity_df[["date", "daily_return"]].dropna().copy()
+    if x.empty:
+        return pd.DataFrame()
+    d = pd.to_datetime(x["date"])
+    x["year"] = d.dt.year
+    x["month"] = d.dt.month
+    m = x.groupby(["year", "month"])["daily_return"].apply(lambda s: (1.0 + s).prod() - 1.0).reset_index()
+    return m.pivot(index="year", columns="month", values="daily_return").sort_index()
+
+
+def _metrics(trades: pd.DataFrame, equity_df: pd.DataFrame, *, starting_capital: float) -> dict:
+    if equity_df.empty:
+        return {}
+    final_capital = float(equity_df.iloc[-1]["equity"])
+    total_return = (final_capital / float(starting_capital)) - 1.0
+    max_drawdown = float(equity_df["drawdown"].min()) if "drawdown" in equity_df.columns else np.nan
+    daily = equity_df["daily_return"].dropna()
+    tr = trades["netReturn"] if "netReturn" in trades.columns else pd.Series(dtype=float)
+    start_dt = pd.to_datetime(equity_df["date"].min())
+    end_dt = pd.to_datetime(equity_df["date"].max())
+    years = max((end_dt - start_dt).days / 365.25, 0.0)
+    cagr = (final_capital / float(starting_capital)) ** (1 / years) - 1 if years > 0 and final_capital > 0 else np.nan
+
+    return {
+        "total_trades": int(len(trades)),
+        "final_equity": final_capital,
+        "total_return_pct": total_return * 100.0,
+        "cagr_pct": cagr * 100.0 if pd.notna(cagr) else np.nan,
+        "average_trade_return_pct": float(tr.mean() * 100.0) if len(tr) else np.nan,
+        "median_trade_return_pct": float(tr.median() * 100.0) if len(tr) else np.nan,
+        "win_rate_pct": float((tr > 0).mean() * 100.0) if len(tr) else np.nan,
+        "max_drawdown_pct": max_drawdown * 100.0 if pd.notna(max_drawdown) else np.nan,
+        "average_daily_return_pct": float(daily.mean() * 100.0) if len(daily) else np.nan,
+        "median_daily_return_pct": float(daily.median() * 100.0) if len(daily) else np.nan,
+    }
+
+
+def run_portfolio_backtest(
+    *,
+    days_before: int = 5,
+    days_after: int = 25,
+    quant_rating_mode: str = "both",
+    quant_tiers: set[str] | None = None,
+    max_positions: int = 10,
+    min_factors: int = 3,
+    min_price: float = MIN_BUY_PRICE_FOR_TRADE,
+    min_composite_score: float = 0.0,
+    top_n_per_day: int = 0,
+    transaction_cost_round_trip: float = TRANSACTION_COST_ROUND_TRIP,
+    starting_capital: float = STARTING_CAPITAL,
+    sector: str | None = None,
+    min_market_cap: float | None = None,
+    min_dollar_volume: float | None = None,
+) -> dict[str, object]:
+    quant_ratings = resolve_quant_ratings(quant_rating_mode=quant_rating_mode, quant_tiers=quant_tiers)
+
+    trades = build_strategy_trades(
+        days_before=int(days_before),
+        days_after=int(days_after),
+        min_factors=max(1, int(min_factors)),
+        min_price=float(min_price),
+        min_composite_score=float(min_composite_score),
+        quant_ratings=quant_ratings,
+        top_n_per_day=max(0, int(top_n_per_day)),
+        transaction_cost_round_trip=float(transaction_cost_round_trip),
+        sector=sector,
+        min_market_cap=min_market_cap,
+        min_dollar_volume=min_dollar_volume,
+    )
+
+    if trades.empty:
+        empty_eq = pd.DataFrame(columns=["date", "cash", "open_positions", "equity", "daily_return", "running_max", "drawdown"])
+        return {
+            "metrics": {},
+            "equity_curve": empty_eq,
+            "trades": trades,
+            "daily_returns": pd.DataFrame(columns=["date", "daily_return"]),
+            "yearly_returns": pd.DataFrame(columns=["year", "yearly_return"]),
+            "monthly_returns_heatmap": pd.DataFrame(),
+            "buy_vs_strong_buy": pd.DataFrame(),
+            "params": {
+                "days_before": days_before,
+                "days_after": days_after,
+                "quant_rating_mode": quant_rating_mode,
+                "quant_tiers": sorted(quant_ratings),
+                "max_positions": max_positions,
+            },
+        }
+
+    equity_df = run_simulation(trades, starting_capital=float(starting_capital), max_positions=int(max_positions))
+    daily_returns = equity_df[["date", "daily_return"]].copy()
+    yearly_returns = _yearly_returns(equity_df)
+    monthly_heatmap = _monthly_heatmap(equity_df)
+    metrics = _metrics(trades, equity_df, starting_capital=float(starting_capital))
+
+    buy_vs = (
+        trades.groupby("quant_tier")
+        .agg(
+            trade_count=("ticker", "count"),
+            avg_net_return=("netReturn", "mean"),
+            median_net_return=("netReturn", "median"),
+            win_rate=("netReturn", lambda s: (s > 0).mean()),
+        )
+        .reset_index()
+    )
+
+    return {
+        "metrics": metrics,
+        "equity_curve": equity_df,
+        "trades": trades,
+        "daily_returns": daily_returns,
+        "yearly_returns": yearly_returns,
+        "monthly_returns_heatmap": monthly_heatmap,
+        "buy_vs_strong_buy": buy_vs,
+        "params": {
+            "days_before": days_before,
+            "days_after": days_after,
+            "quant_rating_mode": quant_rating_mode,
+            "quant_tiers": sorted(quant_ratings),
+            "max_positions": max_positions,
+            "min_factors": min_factors,
+            "min_price": min_price,
+            "min_composite_score": min_composite_score,
+            "top_n_per_day": top_n_per_day,
+            "transaction_cost_round_trip": transaction_cost_round_trip,
+            "starting_capital": starting_capital,
+            "sector": sector,
+            "min_market_cap": min_market_cap,
+            "min_dollar_volume": min_dollar_volume,
+        },
+    }
+
+
+def plot_charts(equity_df: pd.DataFrame, strategy_df: pd.DataFrame) -> tuple[Path, Path, Path]:
     PROCESSED_BACKTEST_DIR.mkdir(parents=True, exist_ok=True)
     plt.figure(figsize=(12, 6))
     plt.plot(equity_df["date"], equity_df["equity"])
@@ -286,7 +528,7 @@ def plot_charts(equity_df: pd.DataFrame, strategy_df: pd.DataFrame) -> None:
     plt.ylabel("Portfolio Value")
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(EQUITY_CHART_FILE, dpi=150)
+    p_eq = _safe_savefig(EQUITY_CHART_FILE)
     plt.close()
 
     plt.figure(figsize=(12, 6))
@@ -296,27 +538,60 @@ def plot_charts(equity_df: pd.DataFrame, strategy_df: pd.DataFrame) -> None:
     plt.ylabel("Drawdown")
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(DRAWDOWN_CHART_FILE, dpi=150)
+    p_dd = _safe_savefig(DRAWDOWN_CHART_FILE)
     plt.close()
 
     plt.figure(figsize=(12, 6))
     plt.hist(strategy_df["netReturn"], bins=100)
-    plt.title("Net Trade Return Distribution (Buy / Strong Buy only)")
+    plt.title("Net Trade Return Distribution")
     plt.xlabel("Net Trade Return")
     plt.ylabel("Frequency")
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(RETURNS_HIST_FILE, dpi=150)
+    p_hist = _safe_savefig(RETURNS_HIST_FILE)
     plt.close()
+    return p_eq, p_dd, p_hist
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backtest earnings strategy with quant filter.")
+    parser.add_argument("--days-before", type=int, default=5, help="Trading days before anchor to enter.")
+    parser.add_argument("--days-after", type=int, default=25, help="Trading days after anchor to exit.")
+    parser.add_argument(
+        "--quant-rating-mode",
+        choices=[
+            "buy",
+            "strong_buy",
+            "both",
+            "hold",
+            "sell",
+            "strong_sell",
+            "bearish",
+            "all",
+        ],
+        default="both",
+        help="Which quant rating tiers to include (ignored if --quant-tiers is set).",
+    )
+    parser.add_argument(
+        "--quant-tiers",
+        type=str,
+        default=None,
+        help="Comma-separated tiers overriding mode: strong_buy,buy,hold,sell,strong_sell.",
+    )
+    parser.add_argument("--max-positions", type=int, default=10, help="Maximum concurrent positions.")
     parser.add_argument(
         "--min-components",
         type=int,
         default=DEFAULT_MIN_COMPOSITE_COMPONENTS,
         help="Minimum composite factor count required to trade (default: 3).",
+    )
+    parser.add_argument("--min-composite-score", type=float, default=0.0, help="Minimum composite score (0-5).")
+    parser.add_argument("--top-n-per-day", type=int, default=0, help="Take top N trades per buy day (0 = unlimited).")
+    parser.add_argument(
+        "--roundtrip-cost",
+        type=float,
+        default=TRANSACTION_COST_ROUND_TRIP,
+        help="Round-trip transaction cost as decimal (0.002 = 0.2%).",
     )
     parser.add_argument(
         "--min-buy-price",
@@ -324,62 +599,69 @@ def main() -> None:
         default=None,
         help=f"Minimum buy price (strictly greater; default: {MIN_BUY_PRICE_FOR_TRADE} from config).",
     )
+    parser.add_argument("--sector", type=str, default=None, help="Optional sector filter if sector metadata exists.")
+    parser.add_argument("--min-market-cap", type=float, default=None, help="Optional minimum market cap.")
+    parser.add_argument("--min-dollar-volume", type=float, default=None, help="Optional minimum dollar volume.")
     args = parser.parse_args()
 
-    min_components = max(1, args.min_components)
     min_buy_price = (
         float(args.min_buy_price)
         if args.min_buy_price is not None
         else float(MIN_BUY_PRICE_FOR_TRADE)
     )
 
-    print("Loading and merging trades + composite quant scores...")
-    strategy_df = load_and_merge(min_components, min_buy_price)
-    print(
-        f"Eligible trades (Buy/Strong Buy, >={min_components} factors, "
-        f"price>${min_buy_price}): {len(strategy_df):,}"
-    )
-    if len(strategy_df) == 0:
-        raise SystemExit(
-            "No trades after filters. Try --min-components 1 or check composite data."
+    tier_override: set[str] | None = None
+    if args.quant_tiers:
+        tier_override = {t.strip() for t in args.quant_tiers.split(",") if t.strip()}
+
+    try:
+        result = run_portfolio_backtest(
+            days_before=args.days_before,
+            days_after=args.days_after,
+            quant_rating_mode=args.quant_rating_mode,
+            quant_tiers=tier_override,
+            max_positions=max(1, int(args.max_positions)),
+            min_factors=max(1, int(args.min_components)),
+            min_price=min_buy_price,
+            min_composite_score=float(args.min_composite_score),
+            top_n_per_day=max(0, int(args.top_n_per_day)),
+            transaction_cost_round_trip=float(args.roundtrip_cost),
+            sector=args.sector,
+            min_market_cap=args.min_market_cap,
+            min_dollar_volume=args.min_dollar_volume,
         )
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
+    equity_df = result["equity_curve"]
+    strategy_df = result["trades"]
+    metrics = result["metrics"]
+    if strategy_df.empty:
+        raise SystemExit("No trades after filters.")
 
-    tier_counts = strategy_df["quant_tier"].value_counts()
-    print("Quant tier counts:")
-    print(tier_counts.to_string())
-    print()
-
-    equity_df, strategy_df = run_simulation(strategy_df)
-
-    final_capital = float(equity_df.iloc[-1]["equity"])
-    total_return = (final_capital / STARTING_CAPITAL) - 1.0
-    max_drawdown = float(equity_df["drawdown"].min())
-
-    print("=== PORTFOLIO RESULTS (Buy / Strong Buy only) ===")
+    qdesc = ", ".join(sorted(strategy_df["quant_tier"].unique())) if "quant_tier" in strategy_df.columns else ""
+    print(f"=== PORTFOLIO RESULTS (quant tiers in book: {qdesc}) ===")
     print(f"Strategy trades (rows): {len(strategy_df):,}")
-    print(f"Starting capital: ${STARTING_CAPITAL:,.2f}")
-    print(f"Max positions: {MAX_POSITIONS}")
-    print(f"Round-trip cost / trade: {TRANSACTION_COST_ROUND_TRIP*100:.2f}%")
+    print(f"Final equity: ${metrics.get('final_equity', np.nan):,.2f}")
+    print(f"Total return: {metrics.get('total_return_pct', np.nan):.2f}%")
+    if pd.notna(metrics.get("cagr_pct")):
+        print(f"CAGR: {metrics['cagr_pct']:.2f}%")
     print(f"Gross avg trade return: {strategy_df['returnDecimal'].mean()*100:.2f}%")
-    print(f"Net avg trade return: {strategy_df['netReturn'].mean()*100:.2f}%")
-    print(f"Final equity: ${final_capital:,.2f}")
-    print(f"Total return: {total_return*100:.2f}%")
-    print(f"Avg daily return (equity): {equity_df['daily_return'].mean()*100:.2f}%")
-    print(f"Median daily return (equity): {equity_df['daily_return'].median()*100:.2f}%")
-    print(f"Max drawdown: {max_drawdown*100:.2f}%")
+    print(f"Net avg trade return: {metrics.get('average_trade_return_pct', np.nan):.2f}%")
+    print(f"Median net trade return: {metrics.get('median_trade_return_pct', np.nan):.2f}%")
+    print(f"Win rate: {metrics.get('win_rate_pct', np.nan):.2f}%")
+    print(f"Max drawdown: {metrics.get('max_drawdown_pct', np.nan):.2f}%")
     print()
     print(f"Buy date range: {strategy_df['buyDate'].min()} to {strategy_df['sellDate'].max()}")
     print(f"Unique buy days: {strategy_df['buyDate'].nunique():,}")
 
-    PROCESSED_BACKTEST_DIR.mkdir(parents=True, exist_ok=True)
-    equity_df.to_csv(EQUITY_OUTPUT_FILE, index=False)
-    strategy_df.to_csv(PORTFOLIO_TRADES_FILE, index=False)
-    plot_charts(equity_df, strategy_df)
+    equity_path = _safe_dataframe_to_csv(equity_df, EQUITY_OUTPUT_FILE)
+    trades_path = _safe_dataframe_to_csv(strategy_df, PORTFOLIO_TRADES_FILE)
+    p_eq, p_dd, p_hist = plot_charts(equity_df, strategy_df)
 
     print()
-    print(f"Saved {EQUITY_OUTPUT_FILE}")
-    print(f"Saved {PORTFOLIO_TRADES_FILE}")
-    print(f"Saved {EQUITY_CHART_FILE}, {DRAWDOWN_CHART_FILE}, {RETURNS_HIST_FILE}")
+    print(f"Saved {equity_path}")
+    print(f"Saved {trades_path}")
+    print(f"Saved {p_eq}, {p_dd}, {p_hist}")
 
 
 if __name__ == "__main__":

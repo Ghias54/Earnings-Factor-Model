@@ -156,8 +156,10 @@ def process_earnings_event(
         "anchorDate": prices.iloc[anchor_index]["date"],
         "buyDate": buy_row["date"],
         "buyPrice": buy_price,
+        "buyVolume": buy_row["volume"],
         "sellDate": sell_row["date"],
         "sellPrice": sell_price,
+        "sellVolume": sell_row["volume"],
         "returnDecimal": (sell_price - buy_price) / buy_price,
         "returnPct": ((sell_price - buy_price) / buy_price) * 100,
     }
