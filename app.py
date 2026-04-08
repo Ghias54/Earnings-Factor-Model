@@ -1,3 +1,5 @@
+"""Run locally: .\\.venv\\Scripts\\streamlit.exe run app.py"""
+
 from __future__ import annotations
 
 import sys
