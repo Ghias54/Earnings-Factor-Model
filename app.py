@@ -17,6 +17,16 @@ sys.path.insert(0, str(SRC))
 from processing.backtest.simulate_portfolio import run_portfolio_backtest
 
 
+def _parse_stop_loss_input(raw: str) -> float | None:
+    val = (raw or "").strip()
+    if not val:
+        return None
+    x = float(val)
+    if x <= 0:
+        return None
+    return x
+
+
 @st.cache_data(show_spinner=False)
 def _run_backtest_cached(
     days_before: int,
@@ -29,6 +39,7 @@ def _run_backtest_cached(
     min_composite_score: float,
     top_n_per_day: int,
     roundtrip_cost: float,
+    stop_loss_pct: float | None,
     sector: str | None,
     min_market_cap: float | None,
     min_dollar_volume: float | None,
@@ -45,6 +56,7 @@ def _run_backtest_cached(
         min_composite_score=min_composite_score,
         top_n_per_day=top_n_per_day,
         transaction_cost_round_trip=roundtrip_cost,
+        stop_loss_pct=stop_loss_pct,
         sector=sector,
         min_market_cap=min_market_cap,
         min_dollar_volume=min_dollar_volume,
@@ -87,6 +99,11 @@ with st.sidebar:
     min_composite_score = st.number_input("Minimum composite score", min_value=0.0, max_value=5.0, value=0.0, step=0.1)
     top_n_per_day = st.number_input("Top N trades per day by score (0 = no cap)", min_value=0, max_value=200, value=0, step=1)
     roundtrip_cost = st.number_input("Round-trip transaction cost (decimal)", min_value=0.0, max_value=0.1, value=0.002, step=0.0005, format="%.4f")
+    stop_loss_input = st.text_input(
+        "Stop loss (decimal, optional)",
+        value="",
+        help="Examples: 0.05 = 5%, 0.10 = 10%. Use 0 or blank for no stop loss.",
+    )
 
     st.subheader("Optional Filters")
     sector = st.text_input("Sector (exact match; leave blank for all)", value="")
@@ -98,6 +115,11 @@ with st.sidebar:
 if run_clicked:
     if not quant_tier_pick:
         st.warning("Select at least one quant tier.")
+        st.stop()
+    try:
+        stop_loss_pct = _parse_stop_loss_input(stop_loss_input)
+    except ValueError:
+        st.warning("Stop loss must be a decimal like 0.05, 0.10, or blank/0 for none.")
         st.stop()
     with st.spinner("Running backtest... this can take a bit depending on dataset size."):
         result = _run_backtest_cached(
@@ -111,6 +133,7 @@ if run_clicked:
             min_composite_score=float(min_composite_score),
             top_n_per_day=int(top_n_per_day),
             roundtrip_cost=float(roundtrip_cost),
+            stop_loss_pct=stop_loss_pct,
             sector=sector.strip() or None,
             min_market_cap=float(min_market_cap) if min_market_cap > 0 else None,
             min_dollar_volume=float(min_dollar_volume) if min_dollar_volume > 0 else None,
@@ -142,6 +165,29 @@ if run_clicked:
     m8.metric("Median Trade Return", f"{metrics['median_trade_return_pct']:.2f}%")
     m9.metric("Max Drawdown", f"{metrics['max_drawdown_pct']:.2f}%")
     m10.metric("Median Daily Return", f"{metrics['median_daily_return_pct']:.3f}%")
+
+    stop_label = "None" if stop_loss_pct is None else f"{stop_loss_pct:.2%}"
+    avg_days_to_stop = metrics.get("avg_days_to_stop", float("nan"))
+    avg_days_to_stop_label = "N/A" if pd.isna(avg_days_to_stop) else f"{float(avg_days_to_stop):.2f}"
+    median_days_to_stop = metrics.get("median_days_to_stop", float("nan"))
+    median_days_to_stop_label = "N/A" if pd.isna(median_days_to_stop) else f"{float(median_days_to_stop):.2f}"
+    st.caption(
+        f"Stop loss setting: {stop_label} | "
+        f"Stopped out: {int(metrics.get('stopped_out_count', 0)):,} "
+        f"({metrics.get('stopped_out_pct', 0.0):.2f}%) | "
+        f"Avg days to stop: {avg_days_to_stop_label}"
+    )
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Stopped Out", f"{int(metrics.get('stopped_out_count', 0)):,}")
+    s2.metric("Stopped Out %", f"{metrics.get('stopped_out_pct', 0.0):.2f}%")
+    s3.metric(
+        "Avg Days to Stop",
+        avg_days_to_stop_label,
+    )
+    s4.metric(
+        "Median Days to Stop",
+        median_days_to_stop_label,
+    )
 
     st.subheader("Visualizations")
     c1, c2 = st.columns(2)

@@ -253,6 +253,77 @@ def _attach_optional_metadata(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+@lru_cache(maxsize=1)
+def _load_price_path_for_stop_loss() -> dict[str, pd.DataFrame]:
+    px = load_prices()[["ticker", "date", "low", "close", "volume"]].copy()
+    px["ticker"] = px["ticker"].astype(str).str.strip()
+    px["date"] = pd.to_datetime(px["date"], errors="coerce")
+    px["low"] = pd.to_numeric(px["low"], errors="coerce")
+    px["close"] = pd.to_numeric(px["close"], errors="coerce")
+    px["volume"] = pd.to_numeric(px["volume"], errors="coerce")
+    px = px.dropna(subset=["ticker", "date"]).sort_values(["ticker", "date"], kind="mergesort")
+    return {t: g.reset_index(drop=True) for t, g in px.groupby("ticker", sort=False)}
+
+
+def _apply_stop_loss(
+    df: pd.DataFrame,
+    *,
+    stop_loss_pct: float | None,
+    transaction_cost_round_trip: float,
+) -> pd.DataFrame:
+    out = df.copy()
+    stop_pct = abs(float(stop_loss_pct)) if stop_loss_pct is not None else None
+    out["stop_loss_pct"] = stop_pct if stop_pct is not None else np.nan
+    out["stopped_out"] = False
+    out["stop_out_date"] = pd.NaT
+    out["days_to_stop"] = np.nan
+    out["exit_reason"] = "normal exit"
+
+    if stop_pct is None or stop_pct <= 0:
+        return out
+
+    # Assumption with daily bars: we trigger stop-loss if the day's LOW breaches stop level.
+    # Since intraday sequencing is unavailable, we model execution at the stop level (not the close).
+    price_map = _load_price_path_for_stop_loss()
+    net_threshold = -stop_pct
+
+    for i, r in out.iterrows():
+        ticker = str(r["ticker"])
+        buy_dt = pd.to_datetime(r["buyDate"], errors="coerce")
+        planned_sell_dt = pd.to_datetime(r["sellDate"], errors="coerce")
+        buy_price = pd.to_numeric(r["buyPrice"], errors="coerce")
+        if pd.isna(buy_dt) or pd.isna(planned_sell_dt) or pd.isna(buy_price) or float(buy_price) <= 0:
+            continue
+
+        px = price_map.get(ticker)
+        if px is None or px.empty:
+            continue
+
+        # Start checking from the day after entry since entry is modeled on buy-date close.
+        window = px[(px["date"] > buy_dt) & (px["date"] <= planned_sell_dt)]
+        if window.empty:
+            continue
+
+        stop_price = float(buy_price) * (1.0 + net_threshold + float(transaction_cost_round_trip))
+        hit = window[(window["low"].notna()) & (window["low"] <= stop_price)]
+        if hit.empty:
+            continue
+
+        h = hit.iloc[0]
+        stop_dt = pd.to_datetime(h["date"], errors="coerce")
+        out.at[i, "sellDate"] = stop_dt
+        out.at[i, "sellPrice"] = stop_price
+        out.at[i, "sellVolume"] = pd.to_numeric(h.get("volume"), errors="coerce")
+        out.at[i, "returnDecimal"] = (stop_price - float(buy_price)) / float(buy_price)
+        out.at[i, "returnPct"] = out.at[i, "returnDecimal"] * 100.0
+        out.at[i, "stopped_out"] = True
+        out.at[i, "stop_out_date"] = stop_dt
+        out.at[i, "days_to_stop"] = max((stop_dt - buy_dt).days, 0)
+        out.at[i, "exit_reason"] = "stop loss"
+
+    return out
+
+
 def build_strategy_trades(
     *,
     days_before: int,
@@ -263,6 +334,7 @@ def build_strategy_trades(
     quant_ratings: set[str],
     top_n_per_day: int,
     transaction_cost_round_trip: float,
+    stop_loss_pct: float | None = None,
     sector: str | None = None,
     min_market_cap: float | None = None,
     min_dollar_volume: float | None = None,
@@ -314,7 +386,13 @@ def build_strategy_trades(
     if min_dollar_volume is not None and "dollar_volume" in df.columns:
         df = df[df["dollar_volume"] >= float(min_dollar_volume)].copy()
 
+    df = _apply_stop_loss(
+        df,
+        stop_loss_pct=stop_loss_pct,
+        transaction_cost_round_trip=float(transaction_cost_round_trip),
+    )
     df["netReturn"] = (df["returnDecimal"] - float(transaction_cost_round_trip)).clip(lower=-1.0)
+    df["realized_return"] = df["netReturn"]
 
     df = df.sort_values(
         ["buyDate", "composite_rating", "ticker"],
@@ -422,6 +500,16 @@ def _metrics(trades: pd.DataFrame, equity_df: pd.DataFrame, *, starting_capital:
     max_drawdown = float(equity_df["drawdown"].min()) if "drawdown" in equity_df.columns else np.nan
     daily = equity_df["daily_return"].dropna()
     tr = trades["netReturn"] if "netReturn" in trades.columns else pd.Series(dtype=float)
+    stopped_mask = (
+        trades["stopped_out"].astype(bool)
+        if "stopped_out" in trades.columns
+        else pd.Series(dtype=bool)
+    )
+    stopped_days = (
+        pd.to_numeric(trades.loc[stopped_mask, "days_to_stop"], errors="coerce")
+        if "days_to_stop" in trades.columns and len(stopped_mask)
+        else pd.Series(dtype=float)
+    )
     start_dt = pd.to_datetime(equity_df["date"].min())
     end_dt = pd.to_datetime(equity_df["date"].max())
     years = max((end_dt - start_dt).days / 365.25, 0.0)
@@ -438,6 +526,10 @@ def _metrics(trades: pd.DataFrame, equity_df: pd.DataFrame, *, starting_capital:
         "max_drawdown_pct": max_drawdown * 100.0 if pd.notna(max_drawdown) else np.nan,
         "average_daily_return_pct": float(daily.mean() * 100.0) if len(daily) else np.nan,
         "median_daily_return_pct": float(daily.median() * 100.0) if len(daily) else np.nan,
+        "stopped_out_count": int(stopped_mask.sum()) if len(stopped_mask) else 0,
+        "stopped_out_pct": float(stopped_mask.mean() * 100.0) if len(stopped_mask) else 0.0,
+        "avg_days_to_stop": float(stopped_days.mean()) if len(stopped_days) else np.nan,
+        "median_days_to_stop": float(stopped_days.median()) if len(stopped_days) else np.nan,
     }
 
 
@@ -453,6 +545,7 @@ def run_portfolio_backtest(
     min_composite_score: float = 0.0,
     top_n_per_day: int = 0,
     transaction_cost_round_trip: float = TRANSACTION_COST_ROUND_TRIP,
+    stop_loss_pct: float | None = None,
     starting_capital: float = STARTING_CAPITAL,
     sector: str | None = None,
     min_market_cap: float | None = None,
@@ -469,6 +562,7 @@ def run_portfolio_backtest(
         quant_ratings=quant_ratings,
         top_n_per_day=max(0, int(top_n_per_day)),
         transaction_cost_round_trip=float(transaction_cost_round_trip),
+        stop_loss_pct=stop_loss_pct,
         sector=sector,
         min_market_cap=min_market_cap,
         min_dollar_volume=min_dollar_volume,
@@ -490,6 +584,7 @@ def run_portfolio_backtest(
                 "quant_rating_mode": quant_rating_mode,
                 "quant_tiers": sorted(quant_ratings),
                 "max_positions": max_positions,
+                "stop_loss_pct": stop_loss_pct,
             },
         }
 
@@ -529,6 +624,7 @@ def run_portfolio_backtest(
             "min_composite_score": min_composite_score,
             "top_n_per_day": top_n_per_day,
             "transaction_cost_round_trip": transaction_cost_round_trip,
+            "stop_loss_pct": stop_loss_pct,
             "starting_capital": starting_capital,
             "sector": sector,
             "min_market_cap": min_market_cap,
@@ -612,6 +708,12 @@ def main() -> None:
         help="Round-trip transaction cost as decimal (0.002 = 0.2%).",
     )
     parser.add_argument(
+        "--stop-loss-pct",
+        type=float,
+        default=None,
+        help="Optional stop loss as decimal (0.10 means stop at -10% net return).",
+    )
+    parser.add_argument(
         "--min-buy-price",
         type=float,
         default=None,
@@ -644,6 +746,7 @@ def main() -> None:
             min_composite_score=float(args.min_composite_score),
             top_n_per_day=max(0, int(args.top_n_per_day)),
             transaction_cost_round_trip=float(args.roundtrip_cost),
+            stop_loss_pct=float(args.stop_loss_pct) if args.stop_loss_pct is not None else None,
             sector=args.sector,
             min_market_cap=args.min_market_cap,
             min_dollar_volume=args.min_dollar_volume,
@@ -668,6 +771,11 @@ def main() -> None:
     print(f"Median net trade return: {metrics.get('median_trade_return_pct', np.nan):.2f}%")
     print(f"Win rate: {metrics.get('win_rate_pct', np.nan):.2f}%")
     print(f"Max drawdown: {metrics.get('max_drawdown_pct', np.nan):.2f}%")
+    print(
+        f"Stopped out: {metrics.get('stopped_out_count', 0):,} "
+        f"({metrics.get('stopped_out_pct', 0.0):.2f}%) | "
+        f"Avg days to stop: {metrics.get('avg_days_to_stop', np.nan):.2f}"
+    )
     print()
     print(f"Buy date range: {strategy_df['buyDate'].min()} to {strategy_df['sellDate'].max()}")
     print(f"Unique buy days: {strategy_df['buyDate'].nunique():,}")
