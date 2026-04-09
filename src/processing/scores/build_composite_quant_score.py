@@ -11,6 +11,7 @@ sys.path.insert(0, str(SRC))
 from config import (
     COMPOSITE_SCORES_FILE,
     GROWTH_SCORES_FILE,
+    INSIDER_SCORES_FILE,
     MOMENTUM_SCORES_FILE,
     PROFITABILITY_SCORES_FILE,
     REVISIONS_SCORES_FILE,
@@ -28,14 +29,16 @@ FACTORS = [
     (PROFITABILITY_SCORES_FILE, "profitability_score"),
     (REVISIONS_SCORES_FILE, "revisions_score"),
     (MOMENTUM_SCORES_FILE, "momentum_score"),
+    (INSIDER_SCORES_FILE, "insider_score"),
 ]
 
 FACTOR_WEIGHTS = {
-    "valuation_score": 0.25,
-    "growth_score": 0.25,
+    "valuation_score": 0.20,
+    "growth_score": 0.20,
     "profitability_score": 0.20,
     "revisions_score": 0.10,
     "momentum_score": 0.20,
+    "insider_score": 0.10,
 }
 
 

@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent
 STEPS = [
     "src/ingestion/companies.py",
     "src/processing/prep/clean_companies.py",
+    "src/ingestion/insider_trades.py",
     "src/ingestion/prices.py",
     "src/ingestion/earnings.py",
     "src/processing/prep/filter_earnings_to_price_range.py",
