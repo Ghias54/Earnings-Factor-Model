@@ -6,6 +6,7 @@ import argparse
 import math
 import sys
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -138,7 +139,8 @@ def resolve_quant_ratings(
     return set(rating_map.get(quant_rating_mode, {"buy", "strong_buy"}))
 
 
-def _load_trade_candidates(days_before: int, days_after: int, min_buy_price: float) -> pd.DataFrame:
+@lru_cache(maxsize=8)
+def _load_trade_candidates_cached(days_before: int, days_after: int, min_buy_price: float) -> pd.DataFrame:
     earnings_df = load_earnings()
     prices_df = load_prices()
     taken_df, _ = build_earnings_returns(
@@ -157,31 +159,33 @@ def _load_trade_candidates(days_before: int, days_after: int, min_buy_price: flo
     return taken_df
 
 
-def _attach_composite_asof(df: pd.DataFrame) -> pd.DataFrame:
+def _load_trade_candidates(days_before: int, days_after: int, min_buy_price: float) -> pd.DataFrame:
+    # Copy so downstream filtering/mutation does not contaminate cached frames.
+    return _load_trade_candidates_cached(days_before, days_after, float(min_buy_price)).copy()
+
+
+@lru_cache(maxsize=1)
+def _load_composite_for_asof() -> pd.DataFrame:
     if not COMPOSITE_FILE.exists():
         raise FileNotFoundError(f"Missing {COMPOSITE_FILE}. Run score pipeline first.")
 
     comp_df = pd.read_csv(COMPOSITE_FILE, low_memory=False)
     comp_df["ticker"] = comp_df["ticker"].astype(str).str.strip()
-    comp_df["earningsAnnouncementDate"] = pd.to_datetime(
-        comp_df["earningsAnnouncementDate"], errors="coerce"
-    )
+    comp_df["earningsAnnouncementDate"] = pd.to_datetime(comp_df["earningsAnnouncementDate"], errors="coerce")
     comp_df = comp_df.dropna(subset=["ticker", "earningsAnnouncementDate"])
-    comp_df = comp_df.rename(
-        columns={"earningsAnnouncementDate": "composite_source_announcement_date"}
-    )
-    comp_df = comp_df.sort_values(["ticker", "composite_source_announcement_date"])
+    comp_df = comp_df.rename(columns={"earningsAnnouncementDate": "composite_source_announcement_date"})
+    comp_df = comp_df.sort_values(["ticker", "composite_source_announcement_date"], kind="mergesort")
+    return comp_df
 
+
+def _attach_composite_asof(df: pd.DataFrame) -> pd.DataFrame:
+    comp_for_asof = _load_composite_for_asof()
     score_cols = [
         c
-        for c in comp_df.columns
-        if c
-        not in (
-            "ticker",
-            "composite_source_announcement_date",
-        )
+        for c in comp_for_asof.columns
+        if c not in ("ticker", "composite_source_announcement_date")
     ]
-    comp_for_asof = comp_df[["ticker", "composite_source_announcement_date"] + score_cols]
+    comp_for_asof = comp_for_asof[["ticker", "composite_source_announcement_date"] + score_cols]
 
     df = df.sort_values(["ticker", "buyDate"], kind="mergesort")
     merged_parts: list[pd.DataFrame] = []
@@ -210,24 +214,38 @@ def _attach_composite_asof(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(merged_parts, ignore_index=True)
 
 
+@lru_cache(maxsize=1)
+def _load_market_cap_table() -> pd.DataFrame:
+    if not VALUATION_FEATURES_FILE.exists():
+        return pd.DataFrame(columns=["ticker", "earningsAnnouncementDate", "marketCap"])
+    val = pd.read_csv(
+        VALUATION_FEATURES_FILE,
+        usecols=lambda c: c in {"ticker", "earningsAnnouncementDate", "marketCap"},
+        low_memory=False,
+    )
+    val["ticker"] = val["ticker"].astype(str).str.strip()
+    val["earningsAnnouncementDate"] = pd.to_datetime(val["earningsAnnouncementDate"], errors="coerce")
+    val["marketCap"] = pd.to_numeric(val.get("marketCap"), errors="coerce")
+    return val.drop_duplicates(["ticker", "earningsAnnouncementDate"], keep="last")
+
+
+@lru_cache(maxsize=1)
+def _load_sector_table() -> pd.DataFrame:
+    if not COMPANIES_ENRICHED_FILE.exists():
+        return pd.DataFrame(columns=["ticker", "sector"])
+    comp = pd.read_csv(COMPANIES_ENRICHED_FILE, low_memory=False, usecols=lambda c: c in {"ticker", "sector"})
+    comp["ticker"] = comp["ticker"].astype(str).str.strip()
+    return comp.drop_duplicates(["ticker"], keep="last")
+
+
 def _attach_optional_metadata(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    if VALUATION_FEATURES_FILE.exists():
-        val = pd.read_csv(
-            VALUATION_FEATURES_FILE,
-            usecols=lambda c: c in {"ticker", "earningsAnnouncementDate", "marketCap"},
-            low_memory=False,
-        )
-        val["ticker"] = val["ticker"].astype(str).str.strip()
-        val["earningsAnnouncementDate"] = pd.to_datetime(val["earningsAnnouncementDate"], errors="coerce")
-        val["marketCap"] = pd.to_numeric(val.get("marketCap"), errors="coerce")
-        val = val.drop_duplicates(["ticker", "earningsAnnouncementDate"], keep="last")
+    val = _load_market_cap_table()
+    if not val.empty:
         out = out.merge(val, on=["ticker", "earningsAnnouncementDate"], how="left")
 
-    if COMPANIES_ENRICHED_FILE.exists():
-        comp = pd.read_csv(COMPANIES_ENRICHED_FILE, low_memory=False, usecols=lambda c: c in {"ticker", "sector"})
-        comp["ticker"] = comp["ticker"].astype(str).str.strip()
-        comp = comp.drop_duplicates(["ticker"], keep="last")
+    comp = _load_sector_table()
+    if not comp.empty:
         out = out.merge(comp, on="ticker", how="left")
 
     out["buyVolume"] = pd.to_numeric(out.get("buyVolume"), errors="coerce")

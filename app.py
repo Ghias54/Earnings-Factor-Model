@@ -17,6 +17,40 @@ sys.path.insert(0, str(SRC))
 from processing.backtest.simulate_portfolio import run_portfolio_backtest
 
 
+@st.cache_data(show_spinner=False)
+def _run_backtest_cached(
+    days_before: int,
+    days_after: int,
+    quant_tiers: tuple[str, ...],
+    starting_capital: float,
+    max_positions: int,
+    min_factors: int,
+    min_price: float,
+    min_composite_score: float,
+    top_n_per_day: int,
+    roundtrip_cost: float,
+    sector: str | None,
+    min_market_cap: float | None,
+    min_dollar_volume: float | None,
+) -> dict:
+    return run_portfolio_backtest(
+        days_before=days_before,
+        days_after=days_after,
+        quant_rating_mode="both",
+        quant_tiers=set(quant_tiers),
+        starting_capital=starting_capital,
+        max_positions=max_positions,
+        min_factors=min_factors,
+        min_price=min_price,
+        min_composite_score=min_composite_score,
+        top_n_per_day=top_n_per_day,
+        transaction_cost_round_trip=roundtrip_cost,
+        sector=sector,
+        min_market_cap=min_market_cap,
+        min_dollar_volume=min_dollar_volume,
+    )
+
+
 st.set_page_config(page_title="Earnings Strategy Dashboard", layout="wide")
 st.title("Earnings-Event Strategy Dashboard")
 st.caption("Research-only local dashboard. Reuses existing portfolio simulation logic.")
@@ -40,6 +74,13 @@ with st.sidebar:
         format_func=lambda k: _tier_labels[k],
         help="Select one or more tiers. Same simulation: long earnings-window trades filtered by composite quant at entry.",
     )
+    starting_capital = st.number_input(
+        "Starting capital ($)",
+        min_value=100.0,
+        value=10_000.0,
+        step=1_000.0,
+        format="%.2f",
+    )
     max_positions = st.number_input("Max positions", min_value=1, max_value=100, value=10, step=1)
     min_factors = st.number_input("Minimum number of factors required", min_value=1, max_value=10, value=3, step=1)
     min_price = st.number_input("Minimum stock price", min_value=0.0, value=1.0, step=0.5)
@@ -59,17 +100,17 @@ if run_clicked:
         st.warning("Select at least one quant tier.")
         st.stop()
     with st.spinner("Running backtest... this can take a bit depending on dataset size."):
-        result = run_portfolio_backtest(
+        result = _run_backtest_cached(
             days_before=int(days_before),
             days_after=int(days_after),
-            quant_rating_mode="both",
-            quant_tiers=set(quant_tier_pick),
+            quant_tiers=tuple(sorted(set(quant_tier_pick))),
+            starting_capital=float(starting_capital),
             max_positions=int(max_positions),
             min_factors=int(min_factors),
             min_price=float(min_price),
             min_composite_score=float(min_composite_score),
             top_n_per_day=int(top_n_per_day),
-            transaction_cost_round_trip=float(roundtrip_cost),
+            roundtrip_cost=float(roundtrip_cost),
             sector=sector.strip() or None,
             min_market_cap=float(min_market_cap) if min_market_cap > 0 else None,
             min_dollar_volume=float(min_dollar_volume) if min_dollar_volume > 0 else None,
@@ -90,16 +131,16 @@ if run_clicked:
     st.subheader("Summary Metrics")
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Total Trades", f"{metrics['total_trades']:,}")
-    m2.metric("Final Equity", f"${metrics['final_equity']:,.2f}")
-    m3.metric("Total Return", f"{metrics['total_return_pct']:.2f}%")
-    m4.metric("CAGR", "N/A" if pd.isna(metrics["cagr_pct"]) else f"{metrics['cagr_pct']:.2f}%")
-    m5.metric("Win Rate", f"{metrics['win_rate_pct']:.2f}%")
+    m2.metric("Starting Capital", f"${float(starting_capital):,.2f}")
+    m3.metric("Final Equity", f"${metrics['final_equity']:,.2f}")
+    m4.metric("Total Return", f"{metrics['total_return_pct']:.2f}%")
+    m5.metric("CAGR", "N/A" if pd.isna(metrics["cagr_pct"]) else f"{metrics['cagr_pct']:.2f}%")
 
     m6, m7, m8, m9, m10 = st.columns(5)
-    m6.metric("Avg Trade Return", f"{metrics['average_trade_return_pct']:.2f}%")
-    m7.metric("Median Trade Return", f"{metrics['median_trade_return_pct']:.2f}%")
-    m8.metric("Max Drawdown", f"{metrics['max_drawdown_pct']:.2f}%")
-    m9.metric("Avg Daily Return", f"{metrics['average_daily_return_pct']:.3f}%")
+    m6.metric("Win Rate", f"{metrics['win_rate_pct']:.2f}%")
+    m7.metric("Avg Trade Return", f"{metrics['average_trade_return_pct']:.2f}%")
+    m8.metric("Median Trade Return", f"{metrics['median_trade_return_pct']:.2f}%")
+    m9.metric("Max Drawdown", f"{metrics['max_drawdown_pct']:.2f}%")
     m10.metric("Median Daily Return", f"{metrics['median_daily_return_pct']:.3f}%")
 
     st.subheader("Visualizations")
