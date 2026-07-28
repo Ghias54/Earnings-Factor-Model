@@ -1,88 +1,117 @@
-# Earnings Event Trading
+# Earnings Factor Model
 
-A quantitative earnings-event trading model that aims to improve win rate and consistency by filtering out low-quality setups.
+A quantitative research framework that studies whether the price volatility around
+corporate earnings announcements can be traded systematically — and, more
+specifically, whether layering a multi-factor scoring model on top of a naive
+"trade every earnings event" strategy improves consistency rather than just chasing
+the largest moves.
 
-## Strategy
+> Research project — not financial advice. All results are hypothetical and derived
+> from historical data.
 
-This project builds a 5-factor quant model based on:
+## The idea
 
-- Valuation
-- Growth
-- Profitability
-- Momentum
-- Revisions (proxy-based)
+Earnings announcements are among the most reliable recurring sources of single-stock
+volatility. A naive strategy that trades every event captures that volatility but
+also inherits all of its noise: the win rate hovers near a coin flip and drawdowns
+are brutal. The hypothesis this project tests is that most of that noise comes from
+low-quality setups, and that ranking events by fundamental and quantitative factors —
+then trading only the higher-conviction subset — should raise the win rate and
+smooth the equity curve, even at the cost of taking fewer trades.
 
-## Roadmap
+The entire pipeline exists to test that hypothesis end to end and to make the
+trade-offs inspectable through an interactive dashboard.
 
-### Phase 1
-Build historical data warehouse:
-- Earnings data
-- Price data
-- Financial statements
-- Analyst estimates
+## Data ingestion
 
-### Phase 2
-Build quant scoring system
+Raw data is pulled from the Financial Modeling Prep API and cached to local CSV, so
+the expensive network step runs once and every downstream experiment reads from
+disk. Separate ingestion modules cover the distinct data domains the model needs:
 
-### Phase 3
-Research strategy performance
+- Company universe and profiles (sector, market cap)
+- Earnings announcement dates and surprises
+- Daily split-adjusted prices
+- Shares-outstanding history (for point-in-time valuation)
+- Analyst estimates and revisions
+- Financial statements (for TTM fundamentals)
+- Insider transactions
 
-### Phase 4
-Backtest trading strategy
+Splitting ingestion by domain keeps each API concern isolated and makes it cheap to
+refresh one dataset without re-pulling everything.
 
-### Phase 5
-Live screening and automation
+## Factor construction and scoring
 
-## Tech Stack
-- Python
-- Financial Modeling Prep API
+Each earnings event is scored across six factors — valuation, growth, profitability,
+momentum, analyst revisions, and insider activity. Rather than mixing raw metrics on
+incompatible scales, each factor is converted to a **cross-sectional percentile
+rank**, so a stock is measured against its peers at that point in time rather than
+against an absolute threshold. Percentile scores are then mapped onto a 0–5 rating
+scale for interpretability.
 
-## Data layout
+The six factor scores are blended into a single **composite quant score** as an
+average of the available components. The pipeline explicitly tracks how many factors
+were present for each event, so a name scored on two factors is never silently
+treated as equivalent to one scored on all six — missing data reduces the component
+count instead of being imputed away.
 
-- Raw downloads: `data/raw/` (gitignored)
-- Processed features and scores: `data/processed/` (gitignored)
-- Set `FMP_API_KEY` in `.env` at the project root for ingestion scripts.
+## Point-in-time discipline (avoiding look-ahead)
 
-## Pipeline
+The most common way an earnings backtest lies to you is by leaking future
+information into past decisions. Two design choices guard against it:
 
-**Processing (after raw CSVs exist under `data/raw/` and processed inputs are available):**
+- **As-of factor attachment.** Composite scores are joined to trades with a
+  backward-looking `merge_asof`, so each trade only ever sees the most recent score
+  that existed *on or before* its entry date — never a score computed from data that
+  hadn't been published yet.
+- **Anchor-relative windows.** Entry and exit are indexed off an anchor tied to the
+  announcement (a configurable number of trading days before entry and after exit),
+  computed on split-adjusted price series, so the trade timing is defined
+  consistently across thousands of events without hand-picking dates.
 
-```bash
-PYTHONPATH=. python run_pipeline.py
-```
+## Backtesting
 
-The runner sets `PYTHONPATH` for child scripts so `config` imports resolve.
+The backtest runs a portfolio-level simulation rather than averaging isolated trade
+returns. Capital carries forward day by day, positions compete for a finite number
+of slots, and the simulation models:
 
-**Typical order**
+- Configurable entry/exit windows relative to the earnings anchor
+- Factor filters (minimum composite score, minimum number of factors present,
+  quant-rating tiers) to isolate the high-conviction subset
+- Position limits and per-day trade caps
+- Round-trip transaction costs
+- Optional stop-loss exits
 
-1. Ingest: `src/ingestion/companies.py` → `src/processing/clean_companies.py` → prices, earnings, shares, optional `company_profiles.py` / `analyst_estimates.py`
-2. `run_pipeline.py`: filter earnings → TTM → valuation features/scores → earnings returns → events → momentum features → growth/profitability/revisions/momentum scores → composite → `simulate_portfolio.py`
+Because capital and open positions are path-dependent, the simulation is inherently
+sequential; the hot paths were later optimized (pre-grouping trade candidates by date
+and by ticker) to keep full-universe runs fast without altering results.
 
-**Factor outputs**
+## Validation
 
-| File | Role |
-|------|------|
-| `data/processed/valuation_scores.csv` | Valuation (PE/PS ranks) |
-| `data/processed/growth_scores.csv` | YoY TTM revenue/EPS growth ranks |
-| `data/processed/profitability_scores.csv` | Net margin + ROE proxy ranks |
-| `data/processed/revisions_scores.csv` | EPS estimate revision (needs `data/raw/analyst_estimates_quarterly.csv`) |
-| `data/processed/momentum_scores.csv` | 63d momentum rank |
-| `data/processed/composite_quant_scores.csv` | Mean of available factor scores |
+Model output isn't taken on faith. An evaluation step compares the locally computed
+factor scores and composite ratings against an external reference set of manually
+collected labels, producing an alignment report. This is a sanity check that the
+factor construction is behaving as intended rather than quietly diverging from a
+known baseline.
 
-`src/processing/simulate_portfolio.py` defaults to a **composite** filter (`FILTER_MODE = "composite"`). If `composite_quant_scores.csv` is missing, it falls back to the legacy EPS-surprise + negative-momentum rule. Revisions stay NaN until analyst estimates are ingested; the composite still averages the other factors.
+## Interactive dashboard
 
-## Seeking Alpha alignment workflow
+A Streamlit dashboard exposes the full strategy surface — entry/exit windows, factor
+filters, position limits, transaction costs, and stop-loss — and recomputes the
+backtest live, rendering the equity curve, drawdown, trade distribution, and summary
+metrics (total return, CAGR, win rate, max drawdown) on each run.
 
-Create a manual benchmark from SA snapshots:
+The dashboard is self-hosted on a private server and reachable over a private
+Tailscale network rather than exposed publicly; a live link can be shared on request.
 
-1. Copy `data/processed/sa_benchmark_template.csv` to `data/processed/sa_benchmark.csv`
-2. Add rows with:
-   - `ticker`, `date` (earnings date in your model output)
-   - SA values: quant score/rating and 5 factor grades
-3. Run:
+## Tech stack
 
-```bash
-PYTHONPATH=. python src/processing/evaluate_sa_alignment.py
-```
+Python · pandas · NumPy · Streamlit · Plotly · Financial Modeling Prep API
 
-This writes `data/processed/sa_alignment_report.csv` and prints score/rating/factor match metrics.
+## Disclaimer
+
+For educational and research purposes only. Not financial advice. All strategies are
+hypothetical, based on historical data, and carry no guarantee of future performance.
+
+## Author
+
+Rehan Ghias — https://github.com/Ghias54
