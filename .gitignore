@@ -17,5 +17,12 @@ data/processed/*
 # Environment variables
 .env
 
+# Legacy archive folder
+DataSets/
+
+# OS
+.DS_Store
+
 # IDE
 .idea/
+.vscode/

@@ -1,8 +1,8 @@
 import pandas as pd
-from config import PROCESSED_DATA_DIR
+from config import EARNINGS_EVENTS_FILE, EARNINGS_RETURNS_FILE, PROCESSED_FACTORS_DIR
 
-INPUT_FILE = PROCESSED_DATA_DIR / "earnings_returns.csv"
-OUTPUT_FILE = PROCESSED_DATA_DIR / "earnings_events.csv"
+INPUT_FILE = EARNINGS_RETURNS_FILE
+OUTPUT_FILE = EARNINGS_EVENTS_FILE
 
 df = pd.read_csv(INPUT_FILE)
 
@@ -42,6 +42,7 @@ events["ticker"] = events["ticker"].astype(str).str.strip()
 
 events = events.sort_values(["ticker", "earningsAnnouncementDate"]).reset_index(drop=True)
 
+PROCESSED_FACTORS_DIR.mkdir(parents=True, exist_ok=True)
 events.to_csv(OUTPUT_FILE, index=False, encoding="utf-8")
 
 print(f"Saved {len(events)} rows to {OUTPUT_FILE}")
