@@ -187,14 +187,19 @@ def _attach_composite_asof(df: pd.DataFrame) -> pd.DataFrame:
     ]
     comp_for_asof = comp_for_asof[["ticker", "composite_source_announcement_date"] + score_cols]
 
+    comp_groups = {
+        _t: _g.drop(columns=["ticker"]).sort_values(
+            "composite_source_announcement_date", kind="mergesort"
+        )
+        for _t, _g in comp_for_asof.groupby("ticker", sort=False)
+    }
+
     df = df.sort_values(["ticker", "buyDate"], kind="mergesort")
     merged_parts: list[pd.DataFrame] = []
     for t, dgrp in df.groupby("ticker", sort=False):
         dgrp = dgrp.sort_values("buyDate", kind="mergesort")
-        cgrp = comp_for_asof[comp_for_asof["ticker"] == t].drop(columns=["ticker"]).sort_values(
-            "composite_source_announcement_date", kind="mergesort"
-        )
-        if cgrp.empty:
+        cgrp = comp_groups.get(t)
+        if cgrp is None or cgrp.empty:
             out = dgrp.copy()
             for col in comp_for_asof.columns:
                 if col == "ticker":
@@ -416,6 +421,8 @@ def run_simulation(strategy_df: pd.DataFrame, *, starting_capital: float, max_po
         pd.unique(pd.concat([strategy_df["buyDate"], strategy_df["sellDate"]]))
     )
 
+    trades_by_date = {d: g for d, g in strategy_df.groupby("buyDate", sort=False)}
+
     for current_date in all_dates:
         still_open: list[dict] = []
         for pos in open_positions:
@@ -425,30 +432,31 @@ def run_simulation(strategy_df: pd.DataFrame, *, starting_capital: float, max_po
                 still_open.append(pos)
         open_positions = still_open
 
-        todays = strategy_df[strategy_df["buyDate"] == current_date]
+        todays = trades_by_date.get(current_date)
         available_slots = max_positions - len(open_positions)
 
-        if available_slots > 0 and len(todays) > 0:
+        if available_slots > 0 and todays is not None and len(todays) > 0:
             trades_to_take = todays.head(available_slots)
             n_open = len(trades_to_take)
             allocation_each = capital / n_open if n_open > 0 else 0.0
 
-            for _, row in trades_to_take.iterrows():
+            _cols = trades_to_take[["netReturn", "ticker", "buyDate", "sellDate", "returnDecimal"]]
+            for net_return, ticker, buy_date, sell_date, return_decimal in _cols.itertuples(index=False, name=None):
                 if capital <= 0:
                     break
                 alloc = min(allocation_each, capital)
                 if alloc <= 0:
                     break
-                final_value = alloc * (1.0 + float(row["netReturn"]))
+                final_value = alloc * (1.0 + float(net_return))
                 open_positions.append(
                     {
-                        "ticker": str(row["ticker"]),
-                        "buy_date": row["buyDate"],
-                        "sell_date": row["sellDate"],
+                        "ticker": str(ticker),
+                        "buy_date": buy_date,
+                        "sell_date": sell_date,
                         "allocated": alloc,
                         "final_value": final_value,
-                        "gross_return": float(row["returnDecimal"]),
-                        "net_return": float(row["netReturn"]),
+                        "gross_return": float(return_decimal),
+                        "net_return": float(net_return),
                     }
                 )
                 capital -= alloc
