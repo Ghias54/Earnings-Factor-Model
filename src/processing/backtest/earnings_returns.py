@@ -23,16 +23,8 @@ from config import (
 EARNINGS_FILE = EARNINGS_FROM_PRICE_START_FILE
 PRICES_FILE = RAW_DATA_DIR / "daily_prices_from_clean_universe.csv"
 
-<<<<<<< HEAD:src/processing/earnings_returns.py
-TAKEN_OUTPUT_FILE = PROCESSED_DATA_DIR / "earnings_returns.csv"
-SKIPPED_OUTPUT_FILE = PROCESSED_DATA_DIR / "earnings_returns_skipped.csv"
-
-BUY_DAYS_BEFORE = 5
-SELL_DAYS_AFTER = 25
-=======
 TAKEN_OUTPUT_FILE = EARNINGS_RETURNS_FILE
 SKIPPED_OUTPUT_FILE = EARNINGS_RETURNS_SKIPPED_FILE
->>>>>>> insider-trades:src/processing/backtest/earnings_returns.py
 
 
 def load_earnings() -> pd.DataFrame:
